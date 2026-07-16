@@ -182,24 +182,23 @@ function FinanceApp({ owner }) {
         .order("transaction_date", { ascending: false });
       if (!error)
         setTx(
-          (data || []).map((x) => ({
-            id: x.id,
-            name: x.name,
-            cat: x.category,
-            value: Number(x.amount),
-            date: new Date(x.transaction_date + "T12:00:00").toLocaleDateString(
-              "pt-BR",
-              { day: "2-digit", month: "short" },
-            ),
-            type: x.transaction_type === "income" ? "in" : "out",
-            status: {
-              pending: "Pendente",
-              paid: "Pago",
-              received: "Recebido",
-              overdue: "Vencido",
-              cancelled: "Cancelado",
-            }[x.status],
-          })),
+          (data || []).map((x) => {
+            const first = new Date(x.transaction_date + "T12:00:00"),
+              now = new Date(),
+              elapsed = Math.max(0,(now.getFullYear()-first.getFullYear())*12+now.getMonth()-first.getMonth()),
+              currentInstallment = x.is_installment?Math.min(x.installment_count,elapsed+1):1,
+              effectiveDate = new Date(first);
+            if(x.is_installment)effectiveDate.setMonth(first.getMonth()+currentInstallment-1);
+            return {
+              id: x.id,
+              name: x.is_installment?`${x.name} · ${currentInstallment}/${x.installment_count}`:x.name,
+              cat: x.category,
+              value: Number(x.installment_amount||x.amount),
+              date: effectiveDate.toLocaleDateString("pt-BR",{day:"2-digit",month:"short"}),
+              type: x.transaction_type === "income" ? "in" : "out",
+              status: currentInstallment>=x.installment_count&&x.is_installment?"Última parcela":({pending:"Pendente",paid:"Pago",received:"Recebido",overdue:"Vencido",cancelled:"Cancelado"}[x.status]),
+            };
+          }),
         );
     })();
   }, [owner.id]);
