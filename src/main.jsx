@@ -609,8 +609,17 @@ function AuthGate() {
     [mode, setMode] = useState("login"),
     [message, setMessage] = useState(""),
     [mfaReady, setMfaReady] = useState(false),
-    [pendingEmail,setPendingEmail]=useState("");
+    [pendingEmail,setPendingEmail]=useState(""),
+    [passwordRecovery,setPasswordRecovery]=useState(false),
+    [recoveryDone,setRecoveryDone]=useState(false);
   useEffect(() => {
+    const {data:{subscription}}=supabase.auth.onAuthStateChange((event,session)=>{
+      if(event==="PASSWORD_RECOVERY"){
+        setUser(session?.user||null);
+        setPasswordRecovery(true);
+        setLoading(false);
+      }
+    });
     (async () => {
       if (!supabase) {
         setError("Configuração do banco não encontrada.");
@@ -643,6 +652,7 @@ function AuthGate() {
       setOwner(o);
       setLoading(false);
     })();
+    return()=>subscription.unsubscribe();
   }, []);
   async function createOwner(name, id = user?.id) {
     if (!id) return;
@@ -674,6 +684,8 @@ function AuthGate() {
   async function migrateAnonymous(e){e.preventDefault();const f=new FormData(e.currentTarget),email=String(f.get("email")).trim();setError("");setPendingEmail(email);const{error}=await supabase.auth.updateUser({email,password:f.get("password"),data:{name:f.get("name").trim()}},{emailRedirectTo:APP_URL});if(error){if(error.message.toLowerCase().includes("different from the old password")){setMessage("A senha já foi salva na tentativa anterior. Reenvie a confirmação para concluir.");return}setError(error.message);return}localStorage.setItem("finance-hub-permanent","true");setMessage("Conta protegida. Confirme o e-mail; depois entre novamente e ative o autenticador.");}
   async function resendConfirmation(){if(!pendingEmail)return setError("Informe o e-mail usado no cadastro.");setError("");const{error}=await supabase.auth.resend({type:"email_change",email:pendingEmail,options:{emailRedirectTo:APP_URL}});if(error)return setError(error.message);setMessage("Novo e-mail enviado com o endereço correto. Use somente o link mais recente.")}
   async function signIn(e){e.preventDefault();const f=new FormData(e.currentTarget);setError("");const{data,error}=await supabase.auth.signInWithPassword({email:f.get("email"),password:f.get("password")});if(error){setError("E-mail ou senha inválidos, ou e-mail ainda não confirmado.");return}setUser(data.user);location.reload()}
+  async function requestPasswordReset(e){e.preventDefault();const email=String(new FormData(e.currentTarget).get("email")).trim();setError("");const{error}=await supabase.auth.resetPasswordForEmail(email,{redirectTo:APP_URL});if(error){setError("Não foi possível enviar agora. Aguarde alguns minutos e tente novamente.");return}setMessage("Se houver uma conta com esse e-mail, enviaremos um link seguro para redefinir a senha.")}
+  async function updateRecoveredPassword(e){e.preventDefault();const f=new FormData(e.currentTarget),password=String(f.get("password")),confirmation=String(f.get("confirmation"));setError("");if(password!==confirmation)return setError("As senhas informadas não são iguais.");const{error}=await supabase.auth.updateUser({password});if(error)return setError(error.message.toLowerCase().includes("different from the old")?"Escolha uma senha diferente da senha anterior.":error.message);setRecoveryDone(true);setMessage("Senha alterada com sucesso. Agora você já pode voltar ao login.")}
   if (loading)
     return (
       <div className="boot">
@@ -683,6 +695,7 @@ function AuthGate() {
         <p>Preparando seu Finance Hub…</p>
       </div>
     );
+  if(passwordRecovery)return <AuthCard title="Crie uma nova senha" text="Use uma senha forte e diferente das anteriores." error={error} message={message}>{recoveryDone?<button className="primary submit" onClick={async()=>{await supabase.auth.signOut();location.href=APP_URL}}>Voltar para o login</button>:<form onSubmit={updateRecoveredPassword}><label>Nova senha<input name="password" type="password" minLength="10" required autoComplete="new-password"/></label><label>Confirmar nova senha<input name="confirmation" type="password" minLength="10" required autoComplete="new-password"/></label><button className="primary submit">Salvar nova senha</button></form>}</AuthCard>;
   if (user?.is_anonymous) return <AuthCard title="Proteja sua conta atual" text="Seus dados existentes serão preservados. Cadastre e-mail e senha para converter este acesso em uma conta recuperável." error={error} message={message}><form onSubmit={migrateAnonymous}><label>Seu nome<input name="name" required minLength="2" defaultValue={user.user_metadata?.name||"Alencar"}/></label><label>E-mail<input name="email" type="email" required onChange={e=>setPendingEmail(e.target.value)}/></label><label>Senha forte<input name="password" type="password" minLength="10" required autoComplete="new-password"/></label><button className="primary submit">Proteger meus dados</button></form>{message&&<button className="auth-switch" onClick={resendConfirmation}>Reenviar confirmação</button>}<button className="auth-switch" onClick={async()=>{await supabase.auth.signOut();location.reload()}}>Já confirmei o e-mail — ir para login</button></AuthCard>;
   if (user && !mfaReady) return <MfaGate user={user} onVerified={()=>location.reload()}/>;
   if (owner) return <FinanceApp owner={owner} />;
@@ -701,12 +714,13 @@ function AuthGate() {
       </div>
       <div className="onboard-card">
         <div className="onboard-icon"><ShieldCheck /></div>
-        <h1>{mode==="login"?"Acesse seu Finance Hub":"Crie sua conta segura"}</h1>
-        <p>{mode==="login"?"Entre com e-mail, senha e autenticação em dois fatores.":"Cada cliente recebe um ambiente financeiro privado e isolado."}</p>
+        <h1>{mode==="login"?"Acesse seu Finance Hub":mode==="forgot"?"Redefina sua senha":"Crie sua conta segura"}</h1>
+        <p>{mode==="login"?"Entre com e-mail, senha e autenticação em dois fatores.":mode==="forgot"?"Informe seu e-mail para receber um link de recuperação seguro.":"Cada cliente recebe um ambiente financeiro privado e isolado."}</p>
         {error && <div className="form-error">{error}</div>}
         {message && <div className="form-success">{message}</div>}
-        {mode==="login"?<form onSubmit={signIn}><label>E-mail<input name="email" type="email" required autoComplete="email"/></label><label>Senha<input name="password" type="password" minLength="10" required autoComplete="current-password"/></label><button className="primary submit">Entrar com segurança</button></form>:<form onSubmit={register}><label>Seu nome<input name="name" required minLength="2" autoFocus/></label><label>E-mail<input name="email" type="email" required autoComplete="email"/></label><label>Senha forte<input name="password" type="password" minLength="10" required autoComplete="new-password"/></label><button className="primary submit">Criar conta</button></form>}
-        <button className="auth-switch" onClick={()=>{setMode(mode==="login"?"register":"login");setError("");setMessage("")}}>{mode==="login"?"Primeiro acesso? Criar conta":"Já tenho conta"}</button>
+        {mode==="login"?<form onSubmit={signIn}><label>E-mail<input name="email" type="email" required autoComplete="email"/></label><label>Senha<input name="password" type="password" minLength="10" required autoComplete="current-password"/></label><button className="primary submit">Entrar com segurança</button></form>:mode==="forgot"?<form onSubmit={requestPasswordReset}><label>E-mail da conta<input name="email" type="email" required autoComplete="email" autoFocus/></label><button className="primary submit">Enviar link de recuperação</button></form>:<form onSubmit={register}><label>Seu nome<input name="name" required minLength="2" autoFocus/></label><label>E-mail<input name="email" type="email" required autoComplete="email"/></label><label>Senha forte<input name="password" type="password" minLength="10" required autoComplete="new-password"/></label><button className="primary submit">Criar conta</button></form>}
+        {mode==="login"&&<button className="auth-switch" onClick={()=>{setMode("forgot");setError("");setMessage("")}}>Esqueci minha senha</button>}
+        <button className="auth-switch" onClick={()=>{setMode(mode==="login"?"register":"login");setError("");setMessage("")}}>{mode==="login"?"Primeiro acesso? Criar conta":"Voltar para o login"}</button>
         <small>Proteção por RLS, e-mail confirmado e MFA obrigatório.</small>
       </div>
     </div>
