@@ -42,6 +42,18 @@ import "./styles.css";
 import { supabase } from "./lib/supabase";
 
 const APP_URL = "https://alencar1992.github.io/FINANCE-HUB/";
+const authErrorPt = (error, fallback = "Não foi possível concluir. Tente novamente.") => {
+  const code = error?.code || error?.error_code || "";
+  const message = String(error?.message || "").toLowerCase();
+  if (code === "over_email_send_rate_limit" || message.includes("rate limit") || message.includes("too many")) return "O limite temporário de envio de e-mails foi atingido. Aguarde antes de tentar novamente.";
+  if (code === "email_not_confirmed" || message.includes("email not confirmed")) return "O e-mail ainda não foi confirmado. Verifique sua caixa de entrada e a pasta de spam.";
+  if (code === "invalid_credentials" || message.includes("invalid login")) return "E-mail ou senha inválidos.";
+  if (code === "user_already_exists" || message.includes("already registered")) return "Este e-mail já está cadastrado.";
+  if (code === "weak_password" || message.includes("weak password")) return "A senha não atende aos requisitos de segurança.";
+  if (message.includes("different from the old password")) return "Escolha uma senha diferente da senha anterior.";
+  if (message.includes("captcha")) return "Não foi possível validar a proteção de segurança. Atualize a página e tente novamente.";
+  return fallback;
+};
 
 const money = (n) =>
   n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -611,7 +623,10 @@ function AuthGate() {
     [mfaReady, setMfaReady] = useState(false),
     [pendingEmail,setPendingEmail]=useState(""),
     [passwordRecovery,setPasswordRecovery]=useState(false),
-    [recoveryDone,setRecoveryDone]=useState(false);
+    [recoveryDone,setRecoveryDone]=useState(false),
+    [recoveryEmail,setRecoveryEmail]=useState(""),
+    [authBusy,setAuthBusy]=useState(false);
+  const authBusyRef=useRef(false);
   useEffect(() => {
     const {data:{subscription}}=supabase.auth.onAuthStateChange((event,session)=>{
       if(event==="PASSWORD_RECOVERY"){
@@ -671,7 +686,7 @@ function AuthGate() {
       options: { data: { name: f.get("name").trim() }, emailRedirectTo: APP_URL },
     });
     if (error) {
-      setError(error.message.includes("registered") ? "Este e-mail já está cadastrado." : error.message);
+      setError(authErrorPt(error,"Não foi possível criar a conta."));
       return;
     }
     if (!data.session) {
@@ -681,11 +696,12 @@ function AuthGate() {
     }
     setUser(data.user);
   }
-  async function migrateAnonymous(e){e.preventDefault();const f=new FormData(e.currentTarget),email=String(f.get("email")).trim();setError("");setPendingEmail(email);const{error}=await supabase.auth.updateUser({email,password:f.get("password"),data:{name:f.get("name").trim()}},{emailRedirectTo:APP_URL});if(error){if(error.message.toLowerCase().includes("different from the old password")){setMessage("A senha já foi salva na tentativa anterior. Reenvie a confirmação para concluir.");return}setError(error.message);return}localStorage.setItem("finance-hub-permanent","true");setMessage("Conta protegida. Confirme o e-mail; depois entre novamente e ative o autenticador.");}
-  async function resendConfirmation(){if(!pendingEmail)return setError("Informe o e-mail usado no cadastro.");setError("");const{error}=await supabase.auth.resend({type:"email_change",email:pendingEmail,options:{emailRedirectTo:APP_URL}});if(error)return setError(error.message);setMessage("Novo e-mail enviado com o endereço correto. Use somente o link mais recente.")}
+  async function migrateAnonymous(e){e.preventDefault();const f=new FormData(e.currentTarget),email=String(f.get("email")).trim();setError("");setPendingEmail(email);const{error}=await supabase.auth.updateUser({email,password:f.get("password"),data:{name:f.get("name").trim()}},{emailRedirectTo:APP_URL});if(error){if(error.message.toLowerCase().includes("different from the old password")){setMessage("A senha já foi salva na tentativa anterior. Reenvie a confirmação para concluir.");return}setError(authErrorPt(error,"Não foi possível proteger a conta."));return}localStorage.setItem("finance-hub-permanent","true");setMessage("Conta protegida. Confirme o e-mail; depois entre novamente e ative o autenticador.");}
+  async function resendConfirmation(){if(!pendingEmail)return setError("Informe o e-mail usado no cadastro.");setError("");const{error}=await supabase.auth.resend({type:"email_change",email:pendingEmail,options:{emailRedirectTo:APP_URL}});if(error)return setError(authErrorPt(error,"Não foi possível reenviar a confirmação."));setMessage("Novo e-mail enviado com o endereço correto. Use somente o link mais recente.")}
   async function signIn(e){e.preventDefault();const f=new FormData(e.currentTarget);setError("");const{data,error}=await supabase.auth.signInWithPassword({email:f.get("email"),password:f.get("password")});if(error){setError("E-mail ou senha inválidos, ou e-mail ainda não confirmado.");return}setUser(data.user);location.reload()}
-  async function requestPasswordReset(e){e.preventDefault();const email=String(new FormData(e.currentTarget).get("email")).trim();setError("");const{error}=await supabase.auth.resetPasswordForEmail(email,{redirectTo:APP_URL});if(error){setError("Não foi possível enviar agora. Aguarde alguns minutos e tente novamente.");return}setMessage("Se houver uma conta com esse e-mail, enviaremos um link seguro para redefinir a senha.")}
-  async function updateRecoveredPassword(e){e.preventDefault();const f=new FormData(e.currentTarget),password=String(f.get("password")),confirmation=String(f.get("confirmation"));setError("");if(password!==confirmation)return setError("As senhas informadas não são iguais.");const{error}=await supabase.auth.updateUser({password});if(error)return setError(error.message.toLowerCase().includes("different from the old")?"Escolha uma senha diferente da senha anterior.":error.message);setRecoveryDone(true);setMessage("Senha alterada com sucesso. Agora você já pode voltar ao login.")}
+  async function requestPasswordReset(e){e.preventDefault();if(authBusyRef.current)return;const email=recoveryEmail.trim();setError("");setMessage("");authBusyRef.current=true;setAuthBusy(true);const{error}=await supabase.auth.resetPasswordForEmail(email,{redirectTo:APP_URL});authBusyRef.current=false;setAuthBusy(false);if(error){setError(authErrorPt(error,"Não foi possível enviar o link de recuperação."));return}setMessage("Se houver uma conta com esse e-mail, enviaremos um link seguro para redefinir a senha.")}
+  async function resendSignupConfirmation(){if(authBusyRef.current||!recoveryEmail.trim())return;setError("");setMessage("");authBusyRef.current=true;setAuthBusy(true);const{error}=await supabase.auth.resend({type:"signup",email:recoveryEmail.trim(),options:{emailRedirectTo:APP_URL}});authBusyRef.current=false;setAuthBusy(false);if(error)return setError(authErrorPt(error,"Não foi possível reenviar a confirmação."));setMessage("Se o cadastro estiver aguardando confirmação, enviaremos um novo link para o e-mail informado.")}
+  async function updateRecoveredPassword(e){e.preventDefault();const f=new FormData(e.currentTarget),password=String(f.get("password")),confirmation=String(f.get("confirmation"));setError("");if(password!==confirmation)return setError("As senhas informadas não são iguais.");const{error}=await supabase.auth.updateUser({password});if(error)return setError(authErrorPt(error,"Não foi possível salvar a nova senha."));setRecoveryDone(true);setMessage("Senha alterada com sucesso. Agora você já pode voltar ao login.")}
   if (loading)
     return (
       <div className="boot">
@@ -701,7 +717,7 @@ function AuthGate() {
   if (owner) return <FinanceApp owner={owner} />;
   if (user && mfaReady) {
     const name = user.user_metadata?.name || user.email?.split("@")[0] || "Cliente";
-    createOwner(name).catch((e)=>setError(e.message));
+    createOwner(name).catch(()=>setError("Não foi possível preparar o perfil. Tente novamente."));
     return <div className="boot"><span><WalletCards/></span><p>Criando seu espaço seguro…</p></div>;
   }
   return (
@@ -718,10 +734,10 @@ function AuthGate() {
         <p>{mode==="login"?"Entre com e-mail, senha e autenticação em dois fatores.":mode==="forgot"?"Informe seu e-mail para receber um link de recuperação seguro.":"Cada cliente recebe um ambiente financeiro privado e isolado."}</p>
         {error && <div className="form-error">{error}</div>}
         {message && <div className="form-success">{message}</div>}
-        {mode==="login"?<form onSubmit={signIn}><label>E-mail<input name="email" type="email" required autoComplete="email"/></label><label>Senha<input name="password" type="password" minLength="10" required autoComplete="current-password"/></label><button className="primary submit">Entrar com segurança</button></form>:mode==="forgot"?<form onSubmit={requestPasswordReset}><label>E-mail da conta<input name="email" type="email" required autoComplete="email" autoFocus/></label><button className="primary submit">Enviar link de recuperação</button></form>:<form onSubmit={register}><label>Seu nome<input name="name" required minLength="2" autoFocus/></label><label>E-mail<input name="email" type="email" required autoComplete="email"/></label><label>Senha forte<input name="password" type="password" minLength="10" required autoComplete="new-password"/></label><button className="primary submit">Criar conta</button></form>}
+        {mode==="login"?<form onSubmit={signIn}><label>E-mail<input name="email" type="email" required autoComplete="email"/></label><label>Senha<input name="password" type="password" minLength="10" required autoComplete="current-password"/></label><button className="primary submit">Entrar com segurança</button></form>:mode==="forgot"?<><form onSubmit={requestPasswordReset}><label>E-mail da conta<input name="email" type="email" required autoComplete="email" autoFocus value={recoveryEmail} onChange={e=>setRecoveryEmail(e.target.value)}/></label><button className="primary submit" disabled={authBusy}>{authBusy?"Enviando…":"Enviar link de recuperação"}</button></form><button className="auth-switch" disabled={authBusy||!recoveryEmail.trim()} onClick={resendSignupConfirmation}>Ainda não confirmou o cadastro? Reenviar confirmação</button></>:<form onSubmit={register}><label>Seu nome<input name="name" required minLength="2" autoFocus/></label><label>E-mail<input name="email" type="email" required autoComplete="email"/></label><label>Senha forte<input name="password" type="password" minLength="10" required autoComplete="new-password"/></label><button className="primary submit">Criar conta</button></form>}
         {mode==="login"&&<button className="auth-switch" onClick={()=>{setMode("forgot");setError("");setMessage("")}}>Esqueci minha senha</button>}
         <button className="auth-switch" onClick={()=>{setMode(mode==="login"?"register":"login");setError("");setMessage("")}}>{mode==="login"?"Primeiro acesso? Criar conta":"Voltar para o login"}</button>
-        <small>Proteção por RLS, e-mail confirmado e MFA obrigatório.</small>
+        <small>Dados isolados, e-mail confirmado e verificação em duas etapas.</small>
       </div>
     </div>
   );
@@ -731,8 +747,8 @@ function AuthCard({title,text,error,message,children}){return <div className="on
 
 function MfaGate({user,onVerified}){
   const [factor,setFactor]=useState(null),[code,setCode]=useState(""),[error,setError]=useState(""),[loading,setLoading]=useState(true);
-  useEffect(()=>{(async()=>{const{data}=await supabase.auth.mfa.listFactors();const verified=data?.totp?.find(x=>x.status==="verified");if(verified){setFactor(verified);setLoading(false);return}const enrolled=await supabase.auth.mfa.enroll({factorType:"totp",friendlyName:`Finance Hub - ${user.email}`});if(enrolled.error)setError(enrolled.error.message);else setFactor(enrolled.data);setLoading(false)})()},[]);
-  async function verify(e){e.preventDefault();setError("");const challenge=await supabase.auth.mfa.challenge({factorId:factor.id});if(challenge.error)return setError(challenge.error.message);const result=await supabase.auth.mfa.verify({factorId:factor.id,challengeId:challenge.data.id,code:code.trim()});if(result.error)return setError("Código inválido. Confira o aplicativo autenticador.");onVerified()}
+  useEffect(()=>{(async()=>{const{data}=await supabase.auth.mfa.listFactors();const verified=data?.totp?.find(x=>x.status==="verified");if(verified){setFactor(verified);setLoading(false);return}const enrolled=await supabase.auth.mfa.enroll({factorType:"totp",friendlyName:`Finance Hub - ${user.email}`});if(enrolled.error)setError(authErrorPt(enrolled.error,"Não foi possível preparar a verificação em duas etapas."));else setFactor(enrolled.data);setLoading(false)})()},[]);
+  async function verify(e){e.preventDefault();setError("");const challenge=await supabase.auth.mfa.challenge({factorId:factor.id});if(challenge.error)return setError(authErrorPt(challenge.error,"Não foi possível iniciar a verificação."));const result=await supabase.auth.mfa.verify({factorId:factor.id,challengeId:challenge.data.id,code:code.trim()});if(result.error)return setError("Código inválido. Confira o aplicativo autenticador.");onVerified()}
   return <AuthCard title="Verificação em duas etapas" text={factor?.status==="verified"?"Digite o código atual do seu aplicativo autenticador.":"Escaneie o QR Code no Google Authenticator, Microsoft Authenticator ou aplicativo compatível."} error={error}>{loading?<p>Preparando autenticação…</p>:<>{factor?.totp?.qr_code&&<img className="mfa-qr" src={factor.totp.qr_code} alt="QR Code para configurar autenticação em duas etapas"/>}{factor?.totp?.secret&&<small className="mfa-secret">Chave manual: {factor.totp.secret}</small>}<form onSubmit={verify}><label>Código de 6 dígitos<input value={code} onChange={e=>setCode(e.target.value.replace(/\D/g,"").slice(0,6))} inputMode="numeric" pattern="[0-9]{6}" required autoFocus/></label><button className="primary submit" disabled={code.length!==6}>Verificar e entrar</button></form></>}</AuthCard>
 }
 
@@ -1917,7 +1933,8 @@ function ReportsModule({ tx }) {
   );
 }
 function SettingsModule({ owner, modules, reloadModules, onUpdate, dark, setDark, notify, ask }) {
-  const [name, setName] = useState(owner.name),[appName,setAppName]=useState(owner.app_name||"Finance Hub"),[appColor,setAppColor]=useState(owner.app_color||"#6445ED"),[email,setEmail]=useState(""),[password,setPassword]=useState("");
+  const [name, setName] = useState(owner.name),[appName,setAppName]=useState(owner.app_name||"Finance Hub"),[appColor,setAppColor]=useState(owner.app_color||"#6445ED"),[email,setEmail]=useState(""),[password,setPassword]=useState(""),[showPassword,setShowPassword]=useState(false),[savingPassword,setSavingPassword]=useState(false);
+  useEffect(()=>{supabase.auth.getUser().then(({data})=>setEmail(data.user?.email||""))},[]);
   async function save(e) {
     e.preventDefault();
     const { error } = await supabase
@@ -1926,8 +1943,8 @@ function SettingsModule({ owner, modules, reloadModules, onUpdate, dark, setDark
       .eq("id", owner.id);
     if(error)return notify("Erro ao salvar personalização.");onUpdate({...owner,name,app_name:appName,app_color:appColor});notify("Personalização salva.");
   }
-  async function linkEmail(){if(!email)return notify("Informe um e-mail válido.");const{error}=await supabase.auth.updateUser({email},{emailRedirectTo:APP_URL});notify(error?error.message:"Enviamos a confirmação. Abra seu e-mail antes de definir a senha.")}
-  async function setAccountPassword(){if(password.length<8)return notify("A senha precisa ter pelo menos 8 caracteres.");const{data:{user}}=await supabase.auth.getUser();if(!user?.email)return notify("Confirme primeiro o endereço de e-mail.");const{error}=await supabase.auth.updateUser({password});if(error)return notify(error.message);localStorage.setItem("finance-hub-permanent","true");setPassword("");notify("Senha ativada. Agora sua conta pode ser acessada em outros aparelhos.")}
+  async function linkEmail(){if(!email)return notify("Informe um e-mail válido.");const{error}=await supabase.auth.updateUser({email},{emailRedirectTo:APP_URL});notify(error?authErrorPt(error,"Não foi possível atualizar o e-mail."):"Enviamos a confirmação para o novo e-mail.")}
+  async function setAccountPassword(){if(password.length<10)return notify("A nova senha precisa ter pelo menos 10 caracteres.");setSavingPassword(true);const{data:{user}}=await supabase.auth.getUser();if(!user?.email){setSavingPassword(false);return notify("Confirme primeiro o endereço de e-mail.")}const{error}=await supabase.auth.updateUser({password});setSavingPassword(false);if(error)return notify(authErrorPt(error,"Não foi possível alterar a senha."));setPassword("");setShowPassword(false);notify("Senha alterada com sucesso.")}
   async function editModule(m){const result=await ask({kind:"input",title:"Editar função",message:"Altere o nome que será exibido no menu do Finance Hub.",value:m.name,confirmLabel:"Salvar alteração"}),next=result?.trim();if(!next||next===m.name)return;const{error}=await supabase.from("custom_modules").update({name:next}).eq("id",m.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível editar.");await reloadModules();notify("Função atualizada.")}
   async function deleteModule(m){const accepted=await ask({kind:"confirm",tone:"danger",title:"Excluir função?",message:`A função “${m.name}” e todos os registros vinculados serão excluídos permanentemente.`,confirmLabel:"Excluir função"});if(!accepted)return;const{error}=await supabase.from("custom_modules").delete().eq("id",m.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível excluir.");await reloadModules();notify("Função excluída.")}
   return (
@@ -1953,7 +1970,7 @@ function SettingsModule({ owner, modules, reloadModules, onUpdate, dark, setDark
         </label>
         <button className="primary">Salvar configurações</button>
       </form>
-    </div><div className="settings-panel"><h2>Segurança da conta</h2><p className="settings-help">Vincule um e-mail verificado e depois crie uma senha. Isso evita perder os dados ao trocar de aparelho ou limpar o navegador.</p><label>E-mail de recuperação<input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="seu@email.com"/></label><button onClick={linkEmail}>Vincular e-mail</button><label>Nova senha<input type="password" value={password} onChange={e=>setPassword(e.target.value)} minLength="8"/></label><button className="primary" onClick={setAccountPassword}>Ativar senha</button></div><div className="settings-panel settings-modules"><h2>Funções criadas</h2><p className="settings-help">Edite o nome ou exclua botões criados por você.</p>{modules.map(m=><div className="module-setting" key={m.id}><span><Sparkles/><strong>{m.name}</strong><small>{m.field_schema?.length||0} campos</small></span><div><button onClick={()=>editModule(m)}>Editar</button><button className="danger-text" onClick={()=>deleteModule(m)}>Excluir</button></div></div>)}{!modules.length&&<EmptyState text="Nenhuma função personalizada."/>}</div></div>
+    </div><div className="settings-panel security-panel"><h2>Segurança da conta</h2><p className="settings-help">Sua senha atual nunca pode ser visualizada. Por segurança, ela é protegida de forma irreversível. Aqui você pode atualizar o e-mail ou criar uma nova senha.</p><label>E-mail da conta<input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="seu@email.com"/></label><button onClick={linkEmail}>Atualizar e-mail</button><label>Nova senha<div className="password-field"><input type={showPassword?"text":"password"} value={password} onChange={e=>setPassword(e.target.value)} minLength="10" autoComplete="new-password" placeholder="Mínimo de 10 caracteres"/><button type="button" onClick={()=>setShowPassword(!showPassword)} aria-label={showPassword?"Ocultar senha digitada":"Mostrar senha digitada"}><Eye/>{showPassword?"Ocultar":"Mostrar"}</button></div></label><small className="password-note">Este campo mostra apenas a nova senha que você está digitando, nunca a senha atual.</small><button className="primary account-password-button" onClick={setAccountPassword} disabled={password.length<10||savingPassword}>{savingPassword?"Alterando…":"Alterar senha"}</button></div><div className="settings-panel settings-modules"><h2>Funções criadas</h2><p className="settings-help">Edite o nome ou exclua botões criados por você.</p>{modules.map(m=><div className="module-setting" key={m.id}><span><Sparkles/><strong>{m.name}</strong><small>{m.field_schema?.length||0} campos</small></span><div><button onClick={()=>editModule(m)}>Editar</button><button className="danger-text" onClick={()=>deleteModule(m)}>Excluir</button></div></div>)}{!modules.length&&<EmptyState text="Nenhuma função personalizada."/>}</div></div>
   );
 }
 function EmptyState({ text }) {
