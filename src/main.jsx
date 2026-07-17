@@ -169,6 +169,24 @@ function FinanceApp({ owner }) {
     setToast(m);
     setTimeout(() => setToast(""), 2600);
   };
+  useEffect(() => {
+    const IDLE_LIMIT = 15 * 60 * 1000;
+    let timer;
+    const reset = () => {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        await supabase.auth.signOut();
+        location.reload();
+      }, IDLE_LIMIT);
+    };
+    const events = ["pointerdown", "keydown", "scroll", "touchstart"];
+    events.forEach((event) => addEventListener(event, reset, { passive: true }));
+    reset();
+    return () => {
+      clearTimeout(timer);
+      events.forEach((event) => removeEventListener(event, reset));
+    };
+  }, []);
   const filtered = useMemo(
     () =>
       tx.filter((x) =>
@@ -573,7 +591,9 @@ function AuthGate() {
     [user, setUser] = useState(null),
     [owner, setOwner] = useState(null),
     [error, setError] = useState(""),
-    [loginRequired,setLoginRequired]=useState(localStorage.getItem("finance-hub-permanent")==="true");
+    [mode, setMode] = useState("login"),
+    [message, setMessage] = useState(""),
+    [mfaReady, setMfaReady] = useState(false);
   useEffect(() => {
     (async () => {
       if (!supabase) {
@@ -581,20 +601,24 @@ function AuthGate() {
         setLoading(false);
         return;
       }
-      let {
+      const {
         data: { session },
       } = await supabase.auth.getSession();
       if (!session) {
-        if(loginRequired){setLoading(false);return}
-        const { data, error } = await supabase.auth.signInAnonymously();
-        if (error) {
-          setError("Ative Anonymous Sign-Ins no Supabase Authentication.");
-          setLoading(false);
-          return;
-        }
-        session = data.session;
+        setLoading(false);
+        return;
       }
       setUser(session.user);
+      if (session.user.is_anonymous) {
+        setLoading(false);
+        return;
+      }
+      const { data: assurance } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      if (assurance?.currentLevel !== "aal2") {
+        setLoading(false);
+        return;
+      }
+      setMfaReady(true);
       const { data: o } = await supabase
         .from("owners")
         .select("*")
@@ -604,26 +628,35 @@ function AuthGate() {
       setLoading(false);
     })();
   }, []);
-  async function createOwner(e) {
-    e.preventDefault();
-    const f = new FormData(e.currentTarget);
-    const row = {
-      id: user.id,
-      name: f.get("name").trim(),
-      profile_color: f.get("color"),
-    };
-    const { data, error } = await supabase
-      .from("owners")
-      .insert(row)
-      .select()
-      .single();
-    if (error) {
-      setError(error.message);
-      return;
-    }
+  async function createOwner(name, id = user?.id) {
+    if (!id) return;
+    const row = { id, name: name.trim(), profile_color: "#6445ed" };
+    const { data, error } = await supabase.from("owners").upsert(row).select().single();
+    if (error) throw error;
     setOwner(data);
   }
-  async function signIn(e){e.preventDefault();const f=new FormData(e.currentTarget);setError("");const{error}=await supabase.auth.signInWithPassword({email:f.get("email"),password:f.get("password")});if(error){setError("E-mail ou senha inválidos.");return}location.reload()}
+  async function register(e) {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    setError("");
+    const { data, error } = await supabase.auth.signUp({
+      email: f.get("email"),
+      password: f.get("password"),
+      options: { data: { name: f.get("name").trim() } },
+    });
+    if (error) {
+      setError(error.message.includes("registered") ? "Este e-mail já está cadastrado." : error.message);
+      return;
+    }
+    if (!data.session) {
+      setMessage("Cadastro criado. Confirme o e-mail e depois faça login.");
+      setMode("login");
+      return;
+    }
+    setUser(data.user);
+  }
+  async function migrateAnonymous(e){e.preventDefault();const f=new FormData(e.currentTarget);setError("");const{error}=await supabase.auth.updateUser({email:f.get("email"),password:f.get("password"),data:{name:f.get("name").trim()}});if(error){setError(error.message);return}localStorage.setItem("finance-hub-permanent","true");setMessage("Conta protegida. Confirme o e-mail; depois entre novamente e ative o autenticador.");}
+  async function signIn(e){e.preventDefault();const f=new FormData(e.currentTarget);setError("");const{data,error}=await supabase.auth.signInWithPassword({email:f.get("email"),password:f.get("password")});if(error){setError("E-mail ou senha inválidos, ou e-mail ainda não confirmado.");return}setUser(data.user);location.reload()}
   if (loading)
     return (
       <div className="boot">
@@ -633,8 +666,14 @@ function AuthGate() {
         <p>Preparando seu Finance Hub…</p>
       </div>
     );
+  if (user?.is_anonymous) return <AuthCard title="Proteja sua conta atual" text="Seus dados existentes serão preservados. Cadastre e-mail e senha para converter este acesso em uma conta recuperável." error={error} message={message}><form onSubmit={migrateAnonymous}><label>Seu nome<input name="name" required minLength="2" defaultValue={user.user_metadata?.name||"Alencar"}/></label><label>E-mail<input name="email" type="email" required/></label><label>Senha forte<input name="password" type="password" minLength="10" required autoComplete="new-password"/></label><button className="primary submit">Proteger meus dados</button></form></AuthCard>;
+  if (user && !mfaReady) return <MfaGate user={user} onVerified={()=>location.reload()}/>;
   if (owner) return <FinanceApp owner={owner} />;
-  if(loginRequired&&!user)return <div className="onboarding"><div className="onboard-brand"><span><WalletCards/></span>Finance Hub</div><div className="onboard-card"><div className="onboard-icon"><ShieldCheck/></div><h1>Acesso protegido</h1><p>Entre com o e-mail e a senha vinculados ao seu Finance Hub.</p>{error&&<div className="form-error">{error}</div>}<form onSubmit={signIn}><label>E-mail<input name="email" type="email" required/></label><label>Senha<input name="password" type="password" minLength="8" required/></label><button className="primary submit">Entrar com segurança</button></form></div></div>;
+  if (user && mfaReady) {
+    const name = user.user_metadata?.name || user.email?.split("@")[0] || "Cliente";
+    createOwner(name).catch((e)=>setError(e.message));
+    return <div className="boot"><span><WalletCards/></span><p>Criando seu espaço seguro…</p></div>;
+  }
   return (
     <div className="onboarding">
       <div className="onboard-brand">
@@ -644,39 +683,26 @@ function AuthGate() {
         Finance Hub
       </div>
       <div className="onboard-card">
-        <div className="onboard-icon">
-          <Sparkles />
-        </div>
-        <h1>Vamos criar seu espaço financeiro</h1>
-        <p>
-          Esta identificação vincula todos os dados ao seu perfil. Não precisa
-          de senha.
-        </p>
+        <div className="onboard-icon"><ShieldCheck /></div>
+        <h1>{mode==="login"?"Acesse seu Finance Hub":"Crie sua conta segura"}</h1>
+        <p>{mode==="login"?"Entre com e-mail, senha e autenticação em dois fatores.":"Cada cliente recebe um ambiente financeiro privado e isolado."}</p>
         {error && <div className="form-error">{error}</div>}
-        <form onSubmit={createOwner}>
-          <label>
-            Seu nome
-            <input
-              name="name"
-              required
-              minLength="2"
-              placeholder="Ex.: Lucas Alencar"
-              autoFocus
-            />
-          </label>
-          <label>
-            Cor do perfil
-            <input name="color" type="color" defaultValue="#6445ed" />
-          </label>
-          <button className="primary submit">
-            Entrar no Finance Hub
-            <ChevronRight />
-          </button>
-        </form>
-        <small>Seus dados ficam protegidos e isolados no Supabase.</small>
+        {message && <div className="form-success">{message}</div>}
+        {mode==="login"?<form onSubmit={signIn}><label>E-mail<input name="email" type="email" required autoComplete="email"/></label><label>Senha<input name="password" type="password" minLength="10" required autoComplete="current-password"/></label><button className="primary submit">Entrar com segurança</button></form>:<form onSubmit={register}><label>Seu nome<input name="name" required minLength="2" autoFocus/></label><label>E-mail<input name="email" type="email" required autoComplete="email"/></label><label>Senha forte<input name="password" type="password" minLength="10" required autoComplete="new-password"/></label><button className="primary submit">Criar conta</button></form>}
+        <button className="auth-switch" onClick={()=>{setMode(mode==="login"?"register":"login");setError("");setMessage("")}}>{mode==="login"?"Primeiro acesso? Criar conta":"Já tenho conta"}</button>
+        <small>Proteção por RLS, e-mail confirmado e MFA obrigatório.</small>
       </div>
     </div>
   );
+}
+
+function AuthCard({title,text,error,message,children}){return <div className="onboarding"><div className="onboard-brand"><span><WalletCards/></span>Finance Hub</div><div className="onboard-card"><div className="onboard-icon"><ShieldCheck/></div><h1>{title}</h1><p>{text}</p>{error&&<div className="form-error">{error}</div>}{message&&<div className="form-success">{message}</div>}{children}</div></div>}
+
+function MfaGate({user,onVerified}){
+  const [factor,setFactor]=useState(null),[code,setCode]=useState(""),[error,setError]=useState(""),[loading,setLoading]=useState(true);
+  useEffect(()=>{(async()=>{const{data}=await supabase.auth.mfa.listFactors();const verified=data?.totp?.find(x=>x.status==="verified");if(verified){setFactor(verified);setLoading(false);return}const enrolled=await supabase.auth.mfa.enroll({factorType:"totp",friendlyName:`Finance Hub - ${user.email}`});if(enrolled.error)setError(enrolled.error.message);else setFactor(enrolled.data);setLoading(false)})()},[]);
+  async function verify(e){e.preventDefault();setError("");const challenge=await supabase.auth.mfa.challenge({factorId:factor.id});if(challenge.error)return setError(challenge.error.message);const result=await supabase.auth.mfa.verify({factorId:factor.id,challengeId:challenge.data.id,code:code.trim()});if(result.error)return setError("Código inválido. Confira o aplicativo autenticador.");onVerified()}
+  return <AuthCard title="Verificação em duas etapas" text={factor?.status==="verified"?"Digite o código atual do seu aplicativo autenticador.":"Escaneie o QR Code no Google Authenticator, Microsoft Authenticator ou aplicativo compatível."} error={error}>{loading?<p>Preparando autenticação…</p>:<>{factor?.totp?.qr_code&&<img className="mfa-qr" src={factor.totp.qr_code} alt="QR Code para configurar autenticação em duas etapas"/>}{factor?.totp?.secret&&<small className="mfa-secret">Chave manual: {factor.totp.secret}</small>}<form onSubmit={verify}><label>Código de 6 dígitos<input value={code} onChange={e=>setCode(e.target.value.replace(/\D/g,"").slice(0,6))} inputMode="numeric" pattern="[0-9]{6}" required autoFocus/></label><button className="primary submit" disabled={code.length!==6}>Verificar e entrar</button></form></>}</AuthCard>
 }
 
 function Dashboard({ owner, setPage, notify, tx }) {
