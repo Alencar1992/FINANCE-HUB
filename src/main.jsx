@@ -39,6 +39,9 @@ import {
   Play,
   Target,
   PackageOpen,
+  PiggyBank,
+  Percent,
+  RefreshCw,
 } from "lucide-react";
 import "./styles.css";
 import { supabase } from "./lib/supabase";
@@ -72,6 +75,7 @@ const nav = [
   ["Eu devo", ArrowDownLeft],
   ["Calendário", CalendarDays],
   ["Relatórios", ChartNoAxesCombined],
+  ["Investimentos", PiggyBank],
   ["Criar função", Sparkles],
   ["Configurações", Settings],
 ];
@@ -424,6 +428,8 @@ function FinanceApp({ owner }) {
             <CalendarModule owner={owner} tx={tx} />
           ) : page === "Relatórios" ? (
             <ReportsModule tx={tx} />
+          ) : page === "Investimentos" ? (
+            <InvestmentsModule owner={owner} notify={notify} />
           ) : page === "Criar função" ? (
             <FunctionBuilder owner={owner} notify={notify} onCancel={()=>setPage("Início")} onCreated={async m=>{await loadCustomModules();setPage(`module:${m.id}`)}} />
           ) : page === "Configurações" ? (
@@ -1001,6 +1007,29 @@ function Dashboard({ owner, setPage, notify, tx }) {
       </section>
     </>
   );
+}
+
+function InvestmentsModule({owner,notify}){
+  const[items,setItems]=useState([]),[snapshots,setSnapshots]=useState([]),[open,setOpen]=useState(false),[position,setPosition]=useState(null),[positionValue,setPositionValue]=useState(""),[rates,setRates]=useState({selic:null,cdi:null,updated:""}),[loadingRates,setLoadingRates]=useState(false);
+  const types=["CDB","LCI","LCA","Poupança","Tesouro Selic","Tesouro Prefixado","Fundo de renda fixa","Outro"];
+  async function load(){const[{data,error},{data:history}]=await Promise.all([supabase.from("investments").select("*").eq("owner_id",owner.id).eq("active",true).order("created_at"),supabase.from("investment_snapshots").select("*").eq("owner_id",owner.id).order("reference_month")]);if(!error)setItems(data||[]);setSnapshots(history||[])}
+  async function loadRates(){setLoadingRates(true);try{const[selicRes,cdiRes]=await Promise.all([fetch("https://api.bcb.gov.br/dados/serie/bcdata.sgs.1178/dados/ultimos/1?formato=json"),fetch("https://api.bcb.gov.br/dados/serie/bcdata.sgs.12/dados/ultimos/1?formato=json")]);const[selicData,cdiData]=await Promise.all([selicRes.json(),cdiRes.json()]),daily=Number(cdiData?.[0]?.valor),annual=(Math.pow(1+daily/100,252)-1)*100;setRates({selic:Number(selicData?.[0]?.valor),cdi:annual,updated:cdiData?.[0]?.data||selicData?.[0]?.data||""})}catch{notify("Não foi possível consultar as taxas do Banco Central agora.")}finally{setLoadingRates(false)}}
+  useEffect(()=>{load();loadRates()},[owner.id]);
+  const referenceRate=item=>item.rate_mode==="cdi"?(rates.cdi||0)*Number(item.contracted_rate||100)/100:item.rate_mode==="savings"?((rates.selic||0)>8.5?6.17:(rates.selic||0)*.7):Number(item.contracted_rate||0);
+  const projected=item=>{const days=Math.max(0,(Date.now()-new Date(item.invested_at+"T12:00").getTime())/86400000),rate=referenceRate(item);return Number(item.initial_amount)*Math.pow(1+rate/100,days/365)};
+  const totalInvested=items.reduce((sum,item)=>sum+Number(item.initial_amount),0),totalCurrent=items.reduce((sum,item)=>sum+Number(item.current_amount),0),gain=totalCurrent-totalInvested,evolution=totalInvested?gain/totalInvested*100:0,monthlyHistory=Object.values(snapshots.reduce((months,row)=>{const key=row.reference_month.slice(0,7);months[key]||={key,label:new Date(`${key}-02T12:00`).toLocaleDateString("pt-BR",{month:"short",year:"2-digit"}),value:0};months[key].value+=Number(row.amount);return months},{})).slice(-12),historyMax=Math.max(1,...monthlyHistory.map(row=>row.value));
+  async function add(e){e.preventDefault();const form=new FormData(e.currentTarget),amount=parseBRNumber(form.get("amount")),type=form.get("type"),mode=type==="Poupança"?"savings":form.get("rate_mode"),rate=mode==="savings"?null:parseBRNumber(form.get("rate"));if(!Number.isFinite(amount)||amount<=0)return notify("Informe um valor investido válido.");if(mode!=="savings"&&(!Number.isFinite(rate)||rate<=0))return notify("Informe a taxa contratada.");const{data,error}=await supabase.from("investments").insert({owner_id:owner.id,name:form.get("name"),bank_name:form.get("bank"),investment_type:type,initial_amount:amount,current_amount:amount,rate_mode:mode,contracted_rate:rate,invested_at:form.get("date"),maturity_date:form.get("maturity")||null,notes:form.get("notes")||null}).select().single();if(error)return notify("Não foi possível salvar o investimento.");const month=`${String(form.get("date")).slice(0,7)}-01`;await supabase.from("investment_snapshots").insert({owner_id:owner.id,investment_id:data.id,reference_month:month,amount,contribution:amount});setOpen(false);await load();notify("Investimento adicionado à carteira.")}
+  async function savePosition(e){e.preventDefault();const amount=parseBRNumber(positionValue);if(!Number.isFinite(amount)||amount<0)return notify("Informe uma posição válida.");const month=new Date().toISOString().slice(0,7)+"-01";const[{error}]=await Promise.all([supabase.from("investments").update({current_amount:amount,updated_at:new Date().toISOString()}).eq("id",position.id).eq("owner_id",owner.id),supabase.from("investment_snapshots").upsert({owner_id:owner.id,investment_id:position.id,reference_month:month,amount},{onConflict:"investment_id,reference_month"})]);if(error)return notify("Não foi possível atualizar a posição.");setPosition(null);setPositionValue("");await load();notify("Posição mensal atualizada.")}
+  function openPosition(item){setPosition(item);setPositionValue(Number(item.current_amount).toFixed(2).replace(".",","))}
+  return <div className="investments-page">
+    <div className="page-head"><div><h2>Investimentos</h2><p>Acompanhe sua carteira, rentabilidade e evolução mensal por banco.</p></div><div className="page-actions"><button onClick={loadRates} disabled={loadingRates}><RefreshCw/>{loadingRates?"Atualizando…":"Atualizar taxas"}</button><button className="primary" onClick={()=>setOpen(true)}><Plus/>Novo investimento</button></div></div>
+    <div className="investment-rates"><span><Landmark/><small>Selic atual</small><strong>{rates.selic==null?"—":`${rates.selic.toFixed(2)}% a.a.`}</strong></span><span><Percent/><small>CDI de referência</small><strong>{rates.cdi==null?"—":`${rates.cdi.toFixed(2)}% a.a.`}</strong></span><p>Fonte: Banco Central do Brasil (SGS){rates.updated?` · atualizada em ${rates.updated}`:""}. Valores são referências para projeção.</p></div>
+    <div className="investment-summary"><div><small>Total aplicado</small><strong>{money(totalInvested)}</strong></div><div><small>Posição atual</small><strong>{money(totalCurrent)}</strong></div><div className={gain>=0?"positive":"negative"}><small>Resultado informado</small><strong>{money(gain)}</strong><span>{evolution.toFixed(2)}%</span></div></div>
+    {!!monthlyHistory.length&&<section className="investment-history"><div><h3>Evolução mensal consolidada</h3><p>Com base nas posições mensais registradas em todos os bancos.</p></div><div className="investment-history-bars">{monthlyHistory.map(row=><span key={row.key} title={`${row.label}: ${money(row.value)}`}><i style={{height:`${Math.max(8,row.value/historyMax*100)}%`}}/><small>{row.label}</small><b>{money(row.value)}</b></span>)}</div></section>}
+    {open&&<form className="inline-form investment-form" onSubmit={add}><label>Nome do investimento<input name="name" required placeholder="Ex.: Reserva de emergência"/></label><label>Banco ou corretora<input name="bank" required placeholder="Ex.: Banco Inter"/></label><label>Tipo<select name="type" required>{types.map(type=><option key={type}>{type}</option>)}</select></label><label>Forma de rentabilidade<select name="rate_mode" required><option value="cdi">Percentual do CDI</option><option value="fixed">Taxa prefixada ao ano</option><option value="manual">Rentabilidade informada</option><option value="savings">Poupança — regra Selic/TR</option></select></label><label>Taxa contratada<input name="rate" type="text" inputMode="decimal" placeholder="Ex.: 110,00 (% CDI ou % a.a.)"/></label><label>Valor investido<input name="amount" type="text" inputMode="decimal" required placeholder="Ex.: 1.250,90"/></label><label>Data da aplicação<input name="date" type="date" required defaultValue={new Date().toISOString().slice(0,10)}/></label><label>Vencimento<input name="maturity" type="date"/></label><label className="wide">Observações<textarea name="notes"/></label><div className="form-actions"><button type="button" onClick={()=>setOpen(false)}>Cancelar</button><button className="primary">Salvar investimento</button></div></form>}
+    <div className="investment-grid">{items.map(item=>{const current=Number(item.current_amount),initial=Number(item.initial_amount),change=initial?(current/initial-1)*100:0,projection=projected(item),rate=referenceRate(item);return <article className="investment-card" key={item.id}><div className="investment-card-head"><span><PiggyBank/></span><div><small>{item.bank_name}</small><h3>{item.name}</h3><p>{item.investment_type}</p></div><i>{item.rate_mode==="cdi"?`${item.contracted_rate}% do CDI`:item.rate_mode==="savings"?"Regra da poupança":`${item.contracted_rate}% a.a.`}</i></div><div className="investment-values"><span><small>Aplicado</small><strong>{money(initial)}</strong></span><span><small>Posição atual</small><strong>{money(current)}</strong></span><span className={change>=0?"positive":"negative"}><small>Evolução</small><strong>{change.toFixed(2)}%</strong></span></div><div className="investment-projection"><span>Projeção pela referência atual ({rate.toFixed(2)}% a.a.)</span><strong>{money(projection)}</strong><div><i style={{width:`${Math.min(100,Math.max(3,50+change))}%`}}/></div></div><button onClick={()=>openPosition(item)}>Registrar posição mensal</button></article>})}{!items.length&&<EmptyState text="Nenhum investimento cadastrado."/>}</div>
+    {position&&<Modal title="Registrar posição mensal" close={()=>setPosition(null)}><form className="form" onSubmit={savePosition}><p className="modal-context">Informe o saldo atual mostrado pelo banco para acompanhar a evolução real de {position.name}.</p><label>Valor atual<input value={positionValue} onChange={e=>setPositionValue(e.target.value)} inputMode="decimal" placeholder="0,00" required/></label><button className="primary submit">Atualizar evolução</button></form></Modal>}
+  </div>
 }
 
 function BarChart({ tx }) {
