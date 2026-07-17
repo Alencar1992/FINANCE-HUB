@@ -162,7 +162,9 @@ function FinanceApp({ owner }) {
     [toast, setToast] = useState(""),
     [tx, setTx] = useState([]),
     [query, setQuery] = useState(""),
-    [customModules, setCustomModules] = useState([]);
+    [customModules, setCustomModules] = useState([]),
+    [profile,setProfile]=useState(owner),
+    [profileMenu,setProfileMenu]=useState(false);
   const notify = (m) => {
     setToast(m);
     setTimeout(() => setToast(""), 2600);
@@ -254,13 +256,13 @@ function FinanceApp({ owner }) {
     );
   }
   return (
-    <div className={dark ? "app dark" : "app"}>
+    <div className={dark ? "app dark" : "app"} style={{"--violet":profile.app_color||"#6445ED"}}>
       <aside className={menu ? "sidebar open" : "sidebar"}>
         <div className="brand">
           <span>
             <WalletCards />
           </span>
-          Finance Hub
+          {profile.app_name||"Finance Hub"}
         </div>
         <button className="close" onClick={() => setMenu(false)}>
           <X />
@@ -281,14 +283,14 @@ function FinanceApp({ owner }) {
             </button>
           ))}
         </nav>
-        <button className="profile">
-          <span>{initials(owner.name)}</span>
+        <div className="profile-wrap"><button className="profile" onClick={()=>setProfileMenu(!profileMenu)}>
+          <span>{initials(profile.name)}</span>
           <div>
-            <strong>{owner.name}</strong>
+            <strong>{profile.name}</strong>
             <small>Perfil pessoal</small>
           </div>
           <MoreHorizontal />
-        </button>
+        </button>{profileMenu&&<div className="profile-popover"><button onClick={()=>setPage("Configurações")}><Settings/>Configurações</button><button className="logout" onClick={async()=>{await supabase.auth.signOut();location.reload()}}><ArrowDownLeft/>Sair</button></div>}</div>
       </aside>
       {menu && <div className="scrim" onClick={() => setMenu(false)} />}
       <main>
@@ -348,10 +350,7 @@ function FinanceApp({ owner }) {
               tx={tx}
             />
           ) : page === "Movimentações" ? (
-            <Transactions
-              rows={filtered}
-              open={() => setModal("transaction")}
-            />
+            <UnifiedMovements owner={owner} baseRows={filtered} open={() => setModal("transaction")}/>
           ) : page === "Me devem" ? (
             <ObligationsPage
               owner={owner}
@@ -374,7 +373,10 @@ function FinanceApp({ owner }) {
             <FunctionBuilder owner={owner} notify={notify} onCancel={()=>setPage("Início")} onCreated={async m=>{await loadCustomModules();setPage(`module:${m.id}`)}} />
           ) : page === "Configurações" ? (
             <SettingsModule
-              owner={owner}
+              owner={profile}
+              modules={customModules}
+              reloadModules={loadCustomModules}
+              onUpdate={setProfile}
               dark={dark}
               setDark={setDark}
               notify={notify}
@@ -570,7 +572,8 @@ function AuthGate() {
   const [loading, setLoading] = useState(true),
     [user, setUser] = useState(null),
     [owner, setOwner] = useState(null),
-    [error, setError] = useState("");
+    [error, setError] = useState(""),
+    [loginRequired,setLoginRequired]=useState(localStorage.getItem("finance-hub-permanent")==="true");
   useEffect(() => {
     (async () => {
       if (!supabase) {
@@ -582,6 +585,7 @@ function AuthGate() {
         data: { session },
       } = await supabase.auth.getSession();
       if (!session) {
+        if(loginRequired){setLoading(false);return}
         const { data, error } = await supabase.auth.signInAnonymously();
         if (error) {
           setError("Ative Anonymous Sign-Ins no Supabase Authentication.");
@@ -619,6 +623,7 @@ function AuthGate() {
     }
     setOwner(data);
   }
+  async function signIn(e){e.preventDefault();const f=new FormData(e.currentTarget);setError("");const{error}=await supabase.auth.signInWithPassword({email:f.get("email"),password:f.get("password")});if(error){setError("E-mail ou senha inválidos.");return}location.reload()}
   if (loading)
     return (
       <div className="boot">
@@ -629,6 +634,7 @@ function AuthGate() {
       </div>
     );
   if (owner) return <FinanceApp owner={owner} />;
+  if(loginRequired&&!user)return <div className="onboarding"><div className="onboard-brand"><span><WalletCards/></span>Finance Hub</div><div className="onboard-card"><div className="onboard-icon"><ShieldCheck/></div><h1>Acesso protegido</h1><p>Entre com o e-mail e a senha vinculados ao seu Finance Hub.</p>{error&&<div className="form-error">{error}</div>}<form onSubmit={signIn}><label>E-mail<input name="email" type="email" required/></label><label>Senha<input name="password" type="password" minLength="8" required/></label><button className="primary submit">Entrar com segurança</button></form></div></div>;
   return (
     <div className="onboarding">
       <div className="onboard-brand">
@@ -675,10 +681,12 @@ function AuthGate() {
 
 function Dashboard({ owner, setPage, notify, tx }) {
   const [obligations, setObligations] = useState([]),
-    [cards, setCards] = useState([]);
+    [cards, setCards] = useState([]),
+    [cardPurchases, setCardPurchases] = useState([]),
+    [subscriptions, setSubscriptions] = useState([]);
   useEffect(() => {
     (async () => {
-      const [{ data: o }, { data: c }] = await Promise.all([
+      const [{ data: o }, { data: c }, { data: p }, { data: s }] = await Promise.all([
         supabase
           .from("obligations")
           .select("*")
@@ -690,9 +698,21 @@ function Dashboard({ owner, setPage, notify, tx }) {
           .select("*")
           .eq("owner_id", owner.id)
           .eq("active", true),
+        supabase
+          .from("card_purchases")
+          .select("*")
+          .eq("owner_id", owner.id)
+          .eq("status", "open"),
+        supabase
+          .from("subscriptions")
+          .select("*")
+          .eq("owner_id", owner.id)
+          .eq("active", true),
       ]);
       setObligations(o || []);
       setCards(c || []);
+      setCardPurchases(p || []);
+      setSubscriptions(s || []);
     })();
   }, [owner.id]);
   const income = tx
@@ -704,9 +724,15 @@ function Dashboard({ owner, setPage, notify, tx }) {
     receivable = obligations
       .filter((x) => x.direction === "receivable")
       .reduce((a, x) => a + Number(x.remaining_amount), 0),
-    payable = obligations
+    payableObligations = obligations
       .filter((x) => x.direction === "payable")
       .reduce((a, x) => a + Number(x.remaining_amount), 0),
+    currentCardInstallments = cardPurchases.reduce(
+      (a, x) => a + Number(x.installment_amount || x.total_amount || 0),
+      0,
+    ),
+    subscriptionsDue = subscriptions.reduce((a, x) => a + Number(x.amount || 0), 0),
+    payable = payableObligations + currentCardInstallments + subscriptionsDue,
     balance = income - expense;
   return (
     <>
@@ -750,7 +776,7 @@ function Dashboard({ owner, setPage, notify, tx }) {
               CreditCard,
               "A pagar",
               payable,
-              `${obligations.filter((x) => x.direction === "payable").length} itens · ${cards.length} cartões`,
+              `${obligations.filter((x) => x.direction === "payable").length + cardPurchases.length + subscriptions.length} itens · ${cards.length} cartões`,
               "amber",
             ],
           ].map(([I, l, v, d, c]) => (
@@ -992,6 +1018,8 @@ function Transactions({ rows, open }) {
     </div>
   );
 }
+function UnifiedMovements({owner,baseRows,open}){const[linked,setLinked]=useState([]);useEffect(()=>{(async()=>{const[{data:o},{data:p}]=await Promise.all([supabase.from("obligations").select("*").eq("owner_id",owner.id).neq("status","cancelled"),supabase.from("card_purchases").select("*,cards(name)").eq("owner_id",owner.id)]);setLinked([...(o||[]).map(x=>({id:`o-${x.id}`,name:`${x.counterparty_name} · ${x.description}`,cat:x.direction==='receivable'?'Me devem':'Eu devo',value:Number(x.installment_amount||x.remaining_amount),date:x.next_due_date?new Date(x.next_due_date+'T12:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}):'Sem data',type:x.direction==='receivable'?'in':'out',status:x.status==='paid'?'Quitado':`Parcela ${Math.min((x.paid_installments||0)+1,x.installments||1)}/${x.installments||1}`})),...(p||[]).map(x=>({id:`p-${x.id}`,name:`${x.cards?.name} · ${x.description}`,cat:`Cartão · ${x.purchased_by}`,value:Number(x.installment_amount),date:new Date(x.first_due_date+'T12:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}),type:'out',status:x.status==='paid'?'Pago':`Parcela ${Math.min(x.paid_installments+1,x.installment_count)}/${x.installment_count}`}))])})()},[owner.id]);return <Transactions rows={[...baseRows,...linked]} open={open}/>}
+
 function DebtPage({ notify }) {
   return (
     <CardsPage
@@ -1831,28 +1859,30 @@ function ReportsModule({ tx }) {
     </div>
   );
 }
-function SettingsModule({ owner, dark, setDark, notify }) {
-  const [name, setName] = useState(owner.name);
+function SettingsModule({ owner, modules, reloadModules, onUpdate, dark, setDark, notify }) {
+  const [name, setName] = useState(owner.name),[appName,setAppName]=useState(owner.app_name||"Finance Hub"),[appColor,setAppColor]=useState(owner.app_color||"#6445ED"),[email,setEmail]=useState(""),[password,setPassword]=useState("");
   async function save(e) {
     e.preventDefault();
     const { error } = await supabase
       .from("owners")
-      .update({ name, updated_at: new Date().toISOString() })
+      .update({ name,app_name:appName,app_color:appColor, updated_at: new Date().toISOString() })
       .eq("id", owner.id);
-    notify(
-      error
-        ? "Erro ao salvar perfil."
-        : "Perfil atualizado. Recarregue para ver o novo nome.",
-    );
+    if(error)return notify("Erro ao salvar personalização.");onUpdate({...owner,name,app_name:appName,app_color:appColor});notify("Personalização salva.");
   }
+  async function linkEmail(){if(!email)return notify("Informe um e-mail válido.");const{error}=await supabase.auth.updateUser({email});notify(error?error.message:"Enviamos a confirmação. Abra seu e-mail antes de definir a senha.")}
+  async function setAccountPassword(){if(password.length<8)return notify("A senha precisa ter pelo menos 8 caracteres.");const{data:{user}}=await supabase.auth.getUser();if(!user?.email)return notify("Confirme primeiro o endereço de e-mail.");const{error}=await supabase.auth.updateUser({password});if(error)return notify(error.message);localStorage.setItem("finance-hub-permanent","true");setPassword("");notify("Senha ativada. Agora sua conta pode ser acessada em outros aparelhos.")}
+  async function editModule(m){const next=prompt("Novo nome da função:",m.name)?.trim();if(!next||next===m.name)return;const{error}=await supabase.from("custom_modules").update({name:next}).eq("id",m.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível editar.");await reloadModules();notify("Função atualizada.")}
+  async function deleteModule(m){if(!confirm(`Excluir a função ${m.name} e todos os seus registros?`))return;const{error}=await supabase.from("custom_modules").delete().eq("id",m.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível excluir.");await reloadModules();notify("Função excluída.")}
   return (
-    <div className="settings-panel">
-      <h2>Configurações</h2>
+    <div className="settings-layout"><div className="settings-panel">
+      <h2>Perfil e aparência</h2>
       <form onSubmit={save}>
         <label>
           Nome do proprietário
           <input value={name} onChange={(e) => setName(e.target.value)} />
         </label>
+        <label>Nome do aplicativo<input value={appName} onChange={e=>setAppName(e.target.value)} maxLength="40"/></label>
+        <label>Cor principal<input type="color" value={appColor} onChange={e=>setAppColor(e.target.value)}/></label>
         <label className="setting-row">
           <span>
             <strong>Tema escuro</strong>
@@ -1866,7 +1896,7 @@ function SettingsModule({ owner, dark, setDark, notify }) {
         </label>
         <button className="primary">Salvar configurações</button>
       </form>
-    </div>
+    </div><div className="settings-panel"><h2>Segurança da conta</h2><p className="settings-help">Vincule um e-mail verificado e depois crie uma senha. Isso evita perder os dados ao trocar de aparelho ou limpar o navegador.</p><label>E-mail de recuperação<input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="seu@email.com"/></label><button onClick={linkEmail}>Vincular e-mail</button><label>Nova senha<input type="password" value={password} onChange={e=>setPassword(e.target.value)} minLength="8"/></label><button className="primary" onClick={setAccountPassword}>Ativar senha</button></div><div className="settings-panel settings-modules"><h2>Funções criadas</h2><p className="settings-help">Edite o nome ou exclua botões criados por você.</p>{modules.map(m=><div className="module-setting" key={m.id}><span><Sparkles/><strong>{m.name}</strong><small>{m.field_schema?.length||0} campos</small></span><div><button onClick={()=>editModule(m)}>Editar</button><button className="danger-text" onClick={()=>deleteModule(m)}>Excluir</button></div></div>)}{!modules.length&&<EmptyState text="Nenhuma função personalizada."/>}</div></div>
   );
 }
 function EmptyState({ text }) {
