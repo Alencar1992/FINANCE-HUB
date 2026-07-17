@@ -1583,11 +1583,12 @@ function CardsModule({ owner, notify }) {
     [open, setOpen] = useState(false),
     [purchaseOpen, setPurchaseOpen] = useState(false),
     [purchaseTotal, setPurchaseTotal] = useState(""),
-    [purchaseCount, setPurchaseCount] = useState(1);
+    [purchaseCount, setPurchaseCount] = useState(1),
+    [selectedCard, setSelectedCard] = useState(null);
   async function load() {
     const [{ data }, { data: p }] = await Promise.all([
       supabase.from("cards").select("*").eq("owner_id", owner.id).order("created_at", { ascending: false }),
-      supabase.from("card_purchases").select("*,cards(name)").eq("owner_id", owner.id).eq("status", "open").order("first_due_date"),
+      supabase.from("card_purchases").select("*,cards(name)").eq("owner_id", owner.id).order("created_at",{ascending:false}),
     ]);
     setCards(data || []);
     setPurchases(p || []);
@@ -1617,10 +1618,11 @@ function CardsModule({ owner, notify }) {
   async function addPurchase(e) {
     e.preventDefault();
     const f = new FormData(e.currentTarget), count = Number(purchaseCount || 1), total = Number(purchaseTotal), monthly = Math.round(total / count * 100) / 100;
-    const { error } = await supabase.from("card_purchases").insert({owner_id:owner.id,card_id:f.get("card"),description:f.get("description"),total_amount:total,installment_count:count,installment_amount:monthly,first_due_date:f.get("due")});
+    const { error } = await supabase.from("card_purchases").insert({owner_id:owner.id,card_id:f.get("card"),description:f.get("description"),purchased_by:f.get("purchased_by")||"Próprio",total_amount:total,installment_count:count,installment_amount:monthly,first_due_date:f.get("due")});
     if(error)return notify("Erro ao cadastrar compra.");
     setPurchaseOpen(false);setPurchaseTotal("");setPurchaseCount(1);load();notify(`Compra cadastrada: ${count}x de ${money(monthly)}`);
   }
+  if(selectedCard)return <CardDetail card={selectedCard} purchases={purchases.filter(p=>p.card_id===selectedCard.id)} back={()=>setSelectedCard(null)} reload={load} notify={notify}/>;
   return (
     <>
       <div className="page-head">
@@ -1659,13 +1661,14 @@ function CardsModule({ owner, notify }) {
           <button className="primary">Salvar cartão</button>
         </form>
       )}
-      {purchaseOpen&&<form className="inline-form" onSubmit={addPurchase}><label>Cartão<select name="card" required>{cards.map(c=><option value={c.id} key={c.id}>{c.name} · {c.bank}</option>)}</select></label><label>Compra<input name="description" required/></label><label>Valor total<input type="number" min=".01" step=".01" value={purchaseTotal} onChange={e=>setPurchaseTotal(e.target.value)} required/></label><label>Parcelas<input type="number" min="1" max="120" value={purchaseCount} onChange={e=>setPurchaseCount(e.target.value)} required/><small>Parcela mensal: {money(Number(purchaseTotal||0)/Number(purchaseCount||1))}</small></label><label>Primeiro vencimento<input name="due" type="date" required/></label><button className="primary">Salvar compra</button></form>}
+      {purchaseOpen&&<form className="inline-form" onSubmit={addPurchase}><label>Cartão<select name="card" required>{cards.map(c=><option value={c.id} key={c.id}>{c.name} · {c.bank}</option>)}</select></label><label>Compra<input name="description" required/></label><label>Quem deve?<input name="purchased_by" placeholder="Próprio, Marcelo..." required/></label><label>Valor total<input type="number" min=".01" step=".01" value={purchaseTotal} onChange={e=>setPurchaseTotal(e.target.value)} required/></label><label>Parcelas<input type="number" min="1" max="120" value={purchaseCount} onChange={e=>setPurchaseCount(e.target.value)} required/><small>Parcela mensal: {money(Number(purchaseTotal||0)/Number(purchaseCount||1))}</small></label><label>Primeiro vencimento<input name="due" type="date" required/></label><button className="primary">Salvar compra</button></form>}
       <div className="cards-grid">
         {cards.map((c) => (
-          <div
+          <button
             className="credit-card"
             style={{ background: `linear-gradient(135deg,${c.color},#071c3a)` }}
             key={c.id}
+            onClick={()=>setSelectedCard(c)}
           >
             <CreditCard />
             <small>{c.bank}</small>
@@ -1674,13 +1677,21 @@ function CardsModule({ owner, notify }) {
             <span>
               Fecha dia {c.closing_day} · vence dia {c.due_day}
             </span>
-          </div>
+            <em>Ver histórico <ChevronRight/></em>
+          </button>
         ))}
         {!cards.length && <EmptyState text="Nenhum cartão cadastrado." />}
       </div>
-      {!!purchases.length&&<div className="page-panel purchase-list"><div className="panel-title"><h2>Parcelas atuais dos cartões</h2></div>{purchases.map(p=><div className="pay" key={p.id}><i><CreditCard/></i><div><strong>{p.description}</strong><span>{p.cards?.name} · parcela {p.paid_installments+1}/{p.installment_count}</span></div><b>{money(Number(p.installment_amount))}</b></div>)}</div>}
+      {!!purchases.filter(p=>p.status==='open').length&&<div className="page-panel purchase-list"><div className="panel-title"><h2>Parcelas atuais dos cartões</h2></div>{purchases.filter(p=>p.status==='open').map(p=><div className="pay" key={p.id}><i><CreditCard/></i><div><strong>{p.description}</strong><span>{p.cards?.name} · {p.purchased_by} · parcela {p.paid_installments+1}/{p.installment_count}</span></div><b>{money(Number(p.installment_amount))}</b></div>)}</div>}
     </>
   );
+}
+
+function CardDetail({card,purchases,back,reload,notify}){
+  const[dialog,setDialog]=useState(null),[selected,setSelected]=useState([]),open=purchases.filter(p=>p.status==='open'),currentTotal=open.reduce((a,p)=>a+Number(p.installment_amount),0),remainingTotal=open.reduce((a,p)=>a+Math.max(0,Number(p.total_amount)-Number(p.paid_installments)*Number(p.installment_amount)),0);
+  function toggle(id){setSelected(v=>v.includes(id)?v.filter(x=>x!==id):[...v,id])}
+  async function pay(all){const{data,error}=await supabase.rpc('pay_card_purchases',{p_card_id:card.id,p_purchase_ids:all?null:selected,p_pay_all:all});if(error)return notify('Não foi possível registrar o pagamento.');setDialog(null);setSelected([]);await reload();notify(all?`Cartão quitado: ${data} compra(s).`:`Pagamento parcial registrado em ${data} compra(s).`)}
+  return <div className="card-detail"><button className="back-button" onClick={back}><ArrowDownLeft/>Voltar aos cartões</button><div className="card-detail-head"><div><span>{card.bank}</span><h2>{card.name}</h2><p>Fecha dia {card.closing_day} · vence dia {card.due_day}</p></div><div><small>Parcela do mês</small><strong>{money(currentTotal)}</strong><span>Saldo total {money(remainingTotal)}</span></div><button className="primary" disabled={!open.length} onClick={()=>setDialog('choose')}><Check/>Pagar</button></div><div className="page-panel"><div className="panel-title"><div><h2>Histórico de compras</h2><p>{purchases.length} compra(s) registradas</p></div></div><div className="purchase-history"><div className="purchase-row header"><span>Compra</span><span>Responsável</span><span>Valor total</span><span>Parcelas</span><span>Parcela atual</span><span>Status</span></div>{purchases.map(p=><div className="purchase-row" key={p.id}><div><strong>{p.description}</strong><small>{new Date(p.first_due_date+'T12:00').toLocaleDateString('pt-BR')}</small></div><span>{p.purchased_by}</span><b>{money(Number(p.total_amount))}</b><span>{Math.min(p.paid_installments+1,p.installment_count)}/{p.installment_count}</span><b>{money(Number(p.installment_amount))}</b><i className={p.status}>{p.status==='paid'?'Pago':'Em aberto'}</i></div>)}{!purchases.length&&<EmptyState text="Nenhuma compra neste cartão."/>}</div></div>{dialog&&<div className="payment-dialog-bg"><div className="payment-dialog"><div className="modal-head"><div><h2>Como deseja pagar?</h2><p>{dialog==='choose'?'Escolha entre quitar o cartão ou selecionar parcelas.':'Selecione as compras que serão pagas neste mês.'}</p></div><button onClick={()=>{setDialog(null);setSelected([])}}><X/></button></div>{dialog==='choose'?<div className="payment-options"><button onClick={()=>setDialog('total')}><ShieldCheck/><strong>Pagar total</strong><span>Quitar todas as compras em débito · {money(remainingTotal)}</span></button><button onClick={()=>setDialog('partial')}><FileText/><strong>Pagamento parcial</strong><span>Escolher as parcelas atuais que serão pagas</span></button></div>:dialog==='total'?<div className="confirm-total"><AlertTriangle/><h3>Confirmar quitação total?</h3><p>Todas as {open.length} compras em aberto serão marcadas como pagas. Valor pendente: <strong>{money(remainingTotal)}</strong>.</p><button className="primary" onClick={()=>pay(true)}>Confirmar pagamento total</button></div>:<><div className="partial-list">{open.map(p=><label key={p.id}><input type="checkbox" checked={selected.includes(p.id)} onChange={()=>toggle(p.id)}/><span><strong>{p.description}</strong><small>{p.purchased_by} · parcela {p.paid_installments+1}/{p.installment_count}</small></span><b>{money(Number(p.installment_amount))}</b></label>)}</div><div className="partial-footer"><span>Selecionado: <strong>{money(open.filter(p=>selected.includes(p.id)).reduce((a,p)=>a+Number(p.installment_amount),0))}</strong></span><button className="primary" disabled={!selected.length} onClick={()=>pay(false)}>Pagar selecionados</button></div></>}</div></div>}</div>
 }
 
 function CalendarModule({ owner, tx }) {
