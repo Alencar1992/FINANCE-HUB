@@ -290,7 +290,7 @@ function FinanceApp({ owner }) {
             <small>Perfil pessoal</small>
           </div>
           <MoreHorizontal />
-        </button>{profileMenu&&<div className="profile-popover"><button onClick={()=>setPage("Configurações")}><Settings/>Configurações</button><button className="logout" onClick={async()=>{await supabase.auth.signOut();location.reload()}}><ArrowDownLeft/>Sair</button></div>}</div>
+        </button>{profileMenu&&<div className="profile-popover"><button onClick={()=>{setPage("Configurações");setProfileMenu(false)}}><Settings/>Configurações</button><button className="logout" onClick={async()=>{const{data:{user}}=await supabase.auth.getUser();if(user?.is_anonymous){setPage("Configurações");setProfileMenu(false);return notify("Vincule e-mail e senha antes de sair, para não perder o acesso aos dados.")}await supabase.auth.signOut();location.reload()}}><ArrowDownLeft/>Sair</button></div>}</div>
       </aside>
       {menu && <div className="scrim" onClick={() => setMenu(false)} />}
       <main>
