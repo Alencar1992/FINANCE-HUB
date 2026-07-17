@@ -161,7 +161,8 @@ function FinanceApp({ owner }) {
     [modal, setModal] = useState(null),
     [toast, setToast] = useState(""),
     [tx, setTx] = useState([]),
-    [query, setQuery] = useState("");
+    [query, setQuery] = useState(""),
+    [customModules, setCustomModules] = useState([]);
   const notify = (m) => {
     setToast(m);
     setTimeout(() => setToast(""), 2600);
@@ -202,6 +203,9 @@ function FinanceApp({ owner }) {
         );
     })();
   }, [owner.id]);
+  async function loadCustomModules(){const{data}=await supabase.from("custom_modules").select("*").eq("owner_id",owner.id).eq("active",true).order("created_at");setCustomModules(data||[])}
+  useEffect(()=>{loadCustomModules()},[owner.id]);
+  const visibleNav=[...nav.slice(0,7),...customModules.map(m=>[`module:${m.id}`,Sparkles,m.name]),...nav.slice(7)];
   async function addTx(e) {
     e.preventDefault();
     const f = new FormData(e.currentTarget),
@@ -262,7 +266,7 @@ function FinanceApp({ owner }) {
           <X />
         </button>
         <nav>
-          {nav.map(([n, I]) => (
+          {visibleNav.map(([n, I, label]) => (
             <button
               key={n}
               className={page === n ? "active" : ""}
@@ -272,7 +276,7 @@ function FinanceApp({ owner }) {
               }}
             >
               <I />
-              <span>{n}</span>
+              <span>{label||n}</span>
               {n === "Me devem" && <b>3</b>}
             </button>
           ))}
@@ -297,7 +301,9 @@ function FinanceApp({ owner }) {
               <h1>
                 {page === "Início"
                   ? `Olá, ${owner.name.split(" ")[0]} 👋`
-                  : page}
+                  : page.startsWith("module:")
+                    ? customModules.find(m=>`module:${m.id}`===page)?.name||"Função"
+                    : page}
               </h1>
               <p>
                 {page === "Início"
@@ -365,7 +371,7 @@ function FinanceApp({ owner }) {
           ) : page === "Relatórios" ? (
             <ReportsModule tx={tx} />
           ) : page === "Criar função" ? (
-            <FunctionBuilder owner={owner} notify={notify} />
+            <FunctionBuilder owner={owner} notify={notify} onCancel={()=>setPage("Início")} onCreated={async m=>{await loadCustomModules();setPage(`module:${m.id}`)}} />
           ) : page === "Configurações" ? (
             <SettingsModule
               owner={owner}
@@ -373,6 +379,8 @@ function FinanceApp({ owner }) {
               setDark={setDark}
               notify={notify}
             />
+          ) : page.startsWith("module:") ? (
+            <CustomModulePage owner={owner} module={customModules.find(m=>`module:${m.id}`===page)} notify={notify}/>
           ) : null}
         </div>
       </main>
@@ -716,7 +724,7 @@ function Dashboard({ owner, setPage, notify, tx }) {
           <WalletCards />
         </div>
         <div className="stats">
-          {[
+            {[
             [
               TrendingUp,
               "Entradas",
@@ -1089,21 +1097,22 @@ function CardsPage({ intro, total, value, children }) {
     </>
   );
 }
-function FunctionBuilder({ owner, notify }) {
+function FunctionBuilder({ owner, notify, onCreated, onCancel }) {
   const [step, setStep] = useState(1),
     [name, setName] = useState(""),
-    [fields, setFields] = useState(["Cliente", "Valor", "Data", "Status"]);
+    [fields, setFields] = useState(["Cliente", "Valor", "Data", "Status"]),
+    [customField,setCustomField]=useState("");
   async function finish() {
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("custom_modules")
       .insert({
         owner_id: owner.id,
         name: name || "Nova função",
         field_schema: fields.map((x) => ({
           name: x,
-          type: x === "Valor" ? "number" : "text",
+          type: /valor|preço|quantidade|km|quilometragem/i.test(x)?"number":/data|vencimento/i.test(x)?"date":"text",
         })),
-      });
+      }).select().single();
     if (error)
       return notify(
         error.code === "23505"
@@ -1111,8 +1120,7 @@ function FunctionBuilder({ owner, notify }) {
           : "Não foi possível criar a função.",
       );
     notify(`Função ${name} criada e salva!`);
-    setStep(1);
-    setName("");
+    onCreated?.(data);
   }
   return (
     <div className="builder">
@@ -1192,6 +1200,8 @@ function FunctionBuilder({ owner, notify }) {
                 </label>
               ),
             )}
+            <div className="custom-field-add"><input value={customField} onChange={e=>setCustomField(e.target.value)} placeholder="Outro campo, ex.: Endereço"/><button onClick={()=>{const value=customField.trim();if(value&&!fields.includes(value))setFields(v=>[...v,value]);setCustomField("")}}><Plus/>Adicionar campo</button></div>
+            <div className="selected-fields">{fields.filter(x=>!["Cliente","Valor","Data","Status","Quilometragem"].includes(x)).map(x=><span key={x}>{x}<button onClick={()=>setFields(v=>v.filter(f=>f!==x))}><X/></button></span>)}</div>
           </>
         )}
         {step === 3 && (
@@ -1201,18 +1211,13 @@ function FunctionBuilder({ owner, notify }) {
             <p>“{name}” será salvo no Supabase.</p>
           </div>
         )}
-        <button
-          className="primary submit"
-          disabled={step === 1 && !name.trim()}
-          onClick={() => (step < 3 ? setStep(step + 1) : finish())}
-        >
-          {step < 3 ? "Continuar" : "Criar função"}
-          <ChevronRight />
-        </button>
+        <div className="form-navigation"><button onClick={()=>step>1?setStep(step-1):onCancel()}>{step>1?'Voltar':'Cancelar'}</button><button className="primary" disabled={step === 1 && !name.trim()} onClick={() => (step < 3 ? setStep(step + 1) : finish())}>{step < 3 ? "Continuar" : "Criar função"}<ChevronRight /></button></div>
       </div>
     </div>
   );
 }
+
+function CustomModulePage({owner,module,notify}){const[entries,setEntries]=useState([]),[open,setOpen]=useState(false);async function load(){if(!module)return;const{data}=await supabase.from("custom_module_entries").select("*").eq("owner_id",owner.id).eq("module_id",module.id).order("created_at",{ascending:false});setEntries(data||[])}useEffect(()=>{load()},[module?.id]);if(!module)return <EmptyState text="Função não encontrada."/>;const fields=Array.isArray(module.field_schema)?module.field_schema:[];async function add(e){e.preventDefault();const f=new FormData(e.currentTarget),data={};fields.forEach(field=>data[field.name]=f.get(field.name));const{error}=await supabase.from("custom_module_entries").insert({owner_id:owner.id,module_id:module.id,data});if(error)return notify("Não foi possível salvar o registro.");setOpen(false);load();notify("Registro salvo na função.")}return <div className="custom-module-page"><div className="page-head"><div><h2>{module.name}</h2><p>Tela criada automaticamente com os campos escolhidos.</p></div><button className="primary" onClick={()=>setOpen(true)}><Plus/>Novo registro</button></div>{open&&<form className="inline-form" onSubmit={add}>{fields.map(field=><label key={field.name}>{field.name}<input name={field.name} type={field.type||"text"} required/></label>)}<div className="form-actions"><button type="button" onClick={()=>setOpen(false)}>Cancelar</button><button className="primary">Salvar registro</button></div></form>}<div className="page-panel"><div className="panel-title"><h2>Registros</h2></div><div className="dynamic-table">{entries.map(entry=><div className="dynamic-row" key={entry.id}>{fields.map(field=><span key={field.name}><small>{field.name}</small><strong>{entry.data?.[field.name]||"—"}</strong></span>)}</div>)}{!entries.length&&<EmptyState text="Nenhum registro nesta função."/>}</div></div></div>}
 
 const normalizeName = (n) =>
   n.trim().replace(/\s+/g, " ").toLocaleUpperCase("pt-BR");
@@ -1439,7 +1444,7 @@ function ObligationsPage({ owner, direction, notify }) {
               </small>
             </label>
           )}
-          <button className="primary">Salvar e vincular</button>
+          <div className="form-actions"><button type="button" onClick={()=>setOpen(false)}>Cancelar</button><button className="primary">Salvar e vincular</button></div>
         </form>
       )}
       <div className="debt-grid grouped">
@@ -1577,6 +1582,7 @@ function DebtorGroup({ group, isRecv, settle, notify }) {
   );
 }
 
+function nextCardDue(card){if(!card)return"";const now=new Date(),target=new Date(now.getFullYear(),now.getMonth()+(now.getDate()>card.due_day?1:0),1),last=new Date(target.getFullYear(),target.getMonth()+1,0).getDate();target.setDate(Math.min(card.due_day,last));return `${target.getFullYear()}-${String(target.getMonth()+1).padStart(2,"0")}-${String(target.getDate()).padStart(2,"0")}`}
 function CardsModule({ owner, notify }) {
   const [cards, setCards] = useState([]),
     [purchases, setPurchases] = useState([]),
@@ -1584,6 +1590,7 @@ function CardsModule({ owner, notify }) {
     [purchaseOpen, setPurchaseOpen] = useState(false),
     [purchaseTotal, setPurchaseTotal] = useState(""),
     [purchaseCount, setPurchaseCount] = useState(1),
+    [purchaseCardId,setPurchaseCardId]=useState(""),
     [selectedCard, setSelectedCard] = useState(null);
   async function load() {
     const [{ data }, { data: p }] = await Promise.all([
@@ -1592,6 +1599,7 @@ function CardsModule({ owner, notify }) {
     ]);
     setCards(data || []);
     setPurchases(p || []);
+    if(!purchaseCardId&&data?.length)setPurchaseCardId(data[0].id);
   }
   useEffect(() => {
     load();
@@ -1618,7 +1626,8 @@ function CardsModule({ owner, notify }) {
   async function addPurchase(e) {
     e.preventDefault();
     const f = new FormData(e.currentTarget), count = Number(purchaseCount || 1), total = Number(purchaseTotal), monthly = Math.round(total / count * 100) / 100;
-    const { error } = await supabase.from("card_purchases").insert({owner_id:owner.id,card_id:f.get("card"),description:f.get("description"),purchased_by:f.get("purchased_by")||"Próprio",total_amount:total,installment_count:count,installment_amount:monthly,first_due_date:f.get("due")});
+    const chosen=cards.find(c=>c.id===purchaseCardId),due=nextCardDue(chosen);
+    const { error } = await supabase.from("card_purchases").insert({owner_id:owner.id,card_id:purchaseCardId,description:f.get("description"),purchased_by:f.get("purchased_by")||"Próprio",total_amount:total,installment_count:count,installment_amount:monthly,first_due_date:due});
     if(error)return notify("Erro ao cadastrar compra.");
     setPurchaseOpen(false);setPurchaseTotal("");setPurchaseCount(1);load();notify(`Compra cadastrada: ${count}x de ${money(monthly)}`);
   }
@@ -1658,10 +1667,10 @@ function CardsModule({ owner, notify }) {
             Cor
             <input name="color" type="color" defaultValue="#6445ed" />
           </label>
-          <button className="primary">Salvar cartão</button>
+          <div className="form-actions"><button type="button" onClick={()=>setOpen(false)}>Cancelar</button><button className="primary">Salvar cartão</button></div>
         </form>
       )}
-      {purchaseOpen&&<form className="inline-form" onSubmit={addPurchase}><label>Cartão<select name="card" required>{cards.map(c=><option value={c.id} key={c.id}>{c.name} · {c.bank}</option>)}</select></label><label>Compra<input name="description" required/></label><label>Quem deve?<input name="purchased_by" placeholder="Próprio, Marcelo..." required/></label><label>Valor total<input type="number" min=".01" step=".01" value={purchaseTotal} onChange={e=>setPurchaseTotal(e.target.value)} required/></label><label>Parcelas<input type="number" min="1" max="120" value={purchaseCount} onChange={e=>setPurchaseCount(e.target.value)} required/><small>Parcela mensal: {money(Number(purchaseTotal||0)/Number(purchaseCount||1))}</small></label><label>Primeiro vencimento<input name="due" type="date" required/></label><button className="primary">Salvar compra</button></form>}
+      {purchaseOpen&&<form className="inline-form" onSubmit={addPurchase}><label>Cartão<select value={purchaseCardId} onChange={e=>setPurchaseCardId(e.target.value)} required>{cards.map(c=><option value={c.id} key={c.id}>{c.name} · {c.bank}</option>)}</select></label><label>Compra<input name="description" required/></label><label>Quem deve?<input name="purchased_by" placeholder="Próprio, Marcelo..." required/></label><label>Valor total<input type="number" min=".01" step=".01" value={purchaseTotal} onChange={e=>setPurchaseTotal(e.target.value)} required/></label><label>Parcelas<input type="number" min="1" max="120" value={purchaseCount} onChange={e=>setPurchaseCount(e.target.value)} required/><small>Parcela mensal: {money(Number(purchaseTotal||0)/Number(purchaseCount||1))}</small></label><label>Vencimento automático<input value={nextCardDue(cards.find(c=>c.id===purchaseCardId))} readOnly/><small>Definido pelo vencimento do cartão selecionado</small></label><div className="form-actions"><button type="button" onClick={()=>setPurchaseOpen(false)}>Cancelar</button><button className="primary">Salvar compra</button></div></form>}
       <div className="cards-grid">
         {cards.map((c) => (
           <button
@@ -1682,7 +1691,6 @@ function CardsModule({ owner, notify }) {
         ))}
         {!cards.length && <EmptyState text="Nenhum cartão cadastrado." />}
       </div>
-      {!!purchases.filter(p=>p.status==='open').length&&<div className="page-panel purchase-list"><div className="panel-title"><h2>Parcelas atuais dos cartões</h2></div>{purchases.filter(p=>p.status==='open').map(p=><div className="pay" key={p.id}><i><CreditCard/></i><div><strong>{p.description}</strong><span>{p.cards?.name} · {p.purchased_by} · parcela {p.paid_installments+1}/{p.installment_count}</span></div><b>{money(Number(p.installment_amount))}</b></div>)}</div>}
     </>
   );
 }
