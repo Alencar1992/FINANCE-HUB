@@ -180,8 +180,7 @@ function FinanceApp({ owner }) {
     [profile,setProfile]=useState(owner),
     [profileMenu,setProfileMenu]=useState(false),
     [appDialog,setAppDialog]=useState(null),
-    [avatarUrl,setAvatarUrl]=useState(""),
-    [backgroundUrl,setBackgroundUrl]=useState("");
+    [avatarUrl,setAvatarUrl]=useState("");
   const dialogResolver=useRef(null);
   const notify = (m) => {
     setToast(m);
@@ -214,7 +213,7 @@ function FinanceApp({ owner }) {
       events.forEach((event) => removeEventListener(event, reset));
     };
   }, []);
-  useEffect(()=>{(async()=>{async function signed(path){if(!path)return"";const{data}=await supabase.storage.from("finance-assets").createSignedUrl(path,3600);return data?.signedUrl||""}setAvatarUrl(await signed(profile.avatar_url));setBackgroundUrl(await signed(profile.background_image_url))})()},[profile.avatar_url,profile.background_image_url]);
+  useEffect(()=>{(async()=>{if(!profile.avatar_url)return setAvatarUrl("");const{data}=await supabase.storage.from("finance-assets").createSignedUrl(profile.avatar_url,3600);setAvatarUrl(data?.signedUrl||"")})()},[profile.avatar_url]);
   const filtered = useMemo(
     () =>
       tx.filter((x) =>
@@ -302,7 +301,7 @@ function FinanceApp({ owner }) {
     );
   }
   return (
-    <div className={`${dark ? "app dark" : "app"}${backgroundUrl?" has-background-image":""}`} style={{"--violet":profile.app_color||"#6445ED","--user-bg":profile.background_color||"#F6F8FC",backgroundImage:backgroundUrl?`linear-gradient(#071c3a18,#071c3a18),url(${backgroundUrl})`:"none"}}>
+    <div className={dark ? "app dark" : "app"} style={{"--violet":profile.app_color||"#6445ED","--user-bg":profile.background_color||"#F6F8FC"}}>
       <aside className={menu ? "sidebar open" : "sidebar"}>
         <div className="brand">
           <span>
@@ -1816,18 +1815,20 @@ function CardDetail({card,purchases,back,reload,notify}){
 
 function CalendarModule({ owner, tx }) {
   const [events, setEvents] = useState([]),
-    now = new Date(),
-    year = now.getFullYear(),
-    month = now.getMonth(),
+    [viewDate,setViewDate]=useState(()=>{const d=new Date();return new Date(d.getFullYear(),d.getMonth(),1)}),
+    year = viewDate.getFullYear(),
+    month = viewDate.getMonth(),
+    leading = new Date(year,month,1).getDay(),
     days = Array.from(
       { length: new Date(year, month + 1, 0).getDate() },
       (_, i) => i + 1,
     );
+  const changeMonth=(amount)=>setViewDate(d=>new Date(d.getFullYear(),d.getMonth()+amount,1));
   useEffect(() => {
     (async () => {
       const start = new Date(year, month, 1).toISOString().slice(0, 10),
         end = new Date(year, month + 1, 0).toISOString().slice(0, 10);
-      const [{ data: obligations }, { data: purchases }] = await Promise.all([
+      const [{ data: obligations }, { data: purchases }, {data:transactions}, {data:subscriptions}] = await Promise.all([
         supabase
           .from("obligations")
           .select("*")
@@ -1839,9 +1840,10 @@ function CalendarModule({ owner, tx }) {
           .from("card_purchases")
           .select("*,cards(name)")
           .eq("owner_id", owner.id)
-          .gte("first_due_date", start)
           .lte("first_due_date", end)
           .eq("status", "open"),
+        supabase.from("transactions").select("*").eq("owner_id",owner.id).lte("transaction_date",end).neq("status","cancelled"),
+        supabase.from("subscriptions").select("*").eq("owner_id",owner.id).eq("active",true),
       ]);
       setEvents([
         ...(obligations || []).map((x) => ({
@@ -1850,12 +1852,14 @@ function CalendarModule({ owner, tx }) {
           type: x.direction === "receivable" ? "in" : "out",
           label: `${x.counterparty_name}: ${money(Number(x.installment_amount))}`,
         })),
-        ...(purchases || []).map((x) => ({
-          id: x.id,
-          day: Number(x.first_due_date.slice(8, 10)),
+        ...(purchases || []).flatMap((x) => {const first=new Date(x.first_due_date+"T12:00"),elapsed=(year-first.getFullYear())*12+month-first.getMonth(),installment=elapsed+1;if(elapsed<0||installment>x.installment_count||installment<=Number(x.paid_installments||0))return[];const last=new Date(year,month+1,0).getDate();return [{
+          id: `cartao-${x.id}-${year}-${month}`,
+          day: Math.min(first.getDate(),last),
           type: "out",
-          label: `${x.cards?.name || "Cartão"}: ${money(Number(x.installment_amount))}`,
-        })),
+          label: `${x.cards?.name || "Cartão"} · ${installment}/${x.installment_count}: ${money(Number(x.installment_amount))}`,
+        }]}),
+        ...(transactions||[]).flatMap(x=>{const first=new Date(x.transaction_date+"T12:00"),elapsed=(year-first.getFullYear())*12+month-first.getMonth();if(x.is_installment){if(elapsed<0||elapsed>=Number(x.installment_count||1))return[];return[{id:`mov-${x.id}-${elapsed}`,day:first.getDate(),type:x.transaction_type==="income"?"in":"out",label:`${x.name} · ${elapsed+1}/${x.installment_count}`}]}if(x.transaction_date<start||x.transaction_date>end)return[];return[{id:`mov-${x.id}`,day:first.getDate(),type:x.transaction_type==="income"?"in":"out",label:x.name}]}),
+        ...(subscriptions||[]).map(x=>({id:`assinatura-${x.id}-${year}-${month}`,day:Math.min(Number(x.due_day||1),new Date(year,month+1,0).getDate()),type:"out",label:`${x.name}: ${money(Number(x.amount))}`})),
       ]);
     })();
   }, [owner.id, year, month]);
@@ -1864,20 +1868,16 @@ function CalendarModule({ owner, tx }) {
       <div className="page-head">
         <div>
           <h2>Calendário financeiro</h2>
-          <p>{now.toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}</p>
+          <p className="calendar-month">{viewDate.toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}</p>
         </div>
+        <div className="calendar-navigation"><button onClick={()=>changeMonth(-1)} aria-label="Mês anterior"><ChevronRight/></button><button onClick={()=>{const d=new Date();setViewDate(new Date(d.getFullYear(),d.getMonth(),1))}}>Mês atual</button><button onClick={()=>changeMonth(1)} aria-label="Próximo mês"><ChevronRight/></button></div>
       </div>
+      <div className="calendar-weekdays">{["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"].map(x=><span key={x}>{x}</span>)}</div>
       <div className="calendar-grid">
+        {Array.from({length:leading},(_,i)=><div className="calendar-day empty" key={`vazio-${i}`}/>) }
         {days.map((d) => (
           <div className="calendar-day" key={d}>
             <b>{d}</b>
-            {tx
-              .filter((x) => parseInt(x.date) === d)
-              .map((x) => (
-                <span className={x.type} key={x.id}>
-                  {x.name}
-                </span>
-              ))}
             {events
               .filter((x) => x.day === d)
               .map((x) => (
@@ -1955,7 +1955,6 @@ function SettingsModule({ owner, modules, reloadModules, onUpdate, dark, setDark
     if(error)return notify("Erro ao salvar personalização.");onUpdate({...owner,name,app_name:appName,app_color:appColor,background_color:backgroundColor});notify("Personalização salva.");
   }
   async function uploadAsset(file,kind){if(!file)return;if(!["image/jpeg","image/png","image/webp","image/gif"].includes(file.type))return notify("Escolha uma imagem JPG, PNG, WEBP ou GIF.");if(file.size>5*1024*1024)return notify("A imagem deve ter no máximo 5 MB.");setAssetBusy(kind);const extension=(file.name.split(".").pop()||"jpg").toLowerCase().replace(/[^a-z0-9]/g,""),path=`${owner.id}/${kind}-${Date.now()}.${extension}`,column=kind==="avatar"?"avatar_url":"background_image_url",oldPath=owner[column];const{error:uploadError}=await supabase.storage.from("finance-assets").upload(path,file,{contentType:file.type});if(uploadError){setAssetBusy("");return notify("Não foi possível enviar a imagem.")}const{error}=await supabase.from("owners").update({[column]:path,updated_at:new Date().toISOString()}).eq("id",owner.id);setAssetBusy("");if(error){await supabase.storage.from("finance-assets").remove([path]);return notify("A imagem foi enviada, mas não foi possível vinculá-la ao perfil.")}if(oldPath)await supabase.storage.from("finance-assets").remove([oldPath]);onUpdate({...owner,[column]:path});notify(kind==="avatar"?"Foto de perfil atualizada.":"Imagem de fundo atualizada.")}
-  async function removeBackground(){if(owner.background_image_url)await supabase.storage.from("finance-assets").remove([owner.background_image_url]);const{error}=await supabase.from("owners").update({background_image_url:null}).eq("id",owner.id);if(error)return notify("Não foi possível remover a imagem.");onUpdate({...owner,background_image_url:null});notify("Imagem de fundo removida.")}
   async function linkEmail(){if(!email)return notify("Informe um e-mail válido.");const{error}=await supabase.auth.updateUser({email},{emailRedirectTo:APP_URL});notify(error?authErrorPt(error,"Não foi possível atualizar o e-mail."):"Enviamos a confirmação para o novo e-mail.")}
   async function setAccountPassword(){if(password.length<10)return notify("A nova senha precisa ter pelo menos 10 caracteres.");setSavingPassword(true);const{data:{user}}=await supabase.auth.getUser();if(!user?.email){setSavingPassword(false);return notify("Confirme primeiro o endereço de e-mail.")}const{error}=await supabase.auth.updateUser({password});setSavingPassword(false);if(error)return notify(authErrorPt(error,"Não foi possível alterar a senha."));setPassword("");setShowPassword(false);notify("Senha alterada com sucesso.")}
   async function editModule(m){const result=await ask({kind:"input",title:"Editar função",message:"Altere o nome que será exibido no menu do Finance Hub.",value:m.name,confirmLabel:"Salvar alteração"}),next=result?.trim();if(!next||next===m.name)return;const{error}=await supabase.from("custom_modules").update({name:next}).eq("id",m.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível editar.");await reloadModules();notify("Função atualizada.")}
@@ -1971,8 +1970,7 @@ function SettingsModule({ owner, modules, reloadModules, onUpdate, dark, setDark
         <label>Nome do aplicativo<input value={appName} onChange={e=>setAppName(e.target.value)} maxLength="40"/></label>
         <label>Cor principal<input type="color" value={appColor} onChange={e=>setAppColor(e.target.value)}/></label>
         <label>Cor de fundo<input type="color" value={backgroundColor} onChange={e=>setBackgroundColor(e.target.value)}/></label>
-        <div className="asset-upload-grid"><label className="asset-upload"><span>Foto do perfil</span><input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={e=>uploadAsset(e.target.files?.[0],"avatar")} disabled={!!assetBusy}/><strong>{assetBusy==="avatar"?"Enviando…":"Escolher foto"}</strong><small>JPG, PNG, WEBP ou GIF · até 5 MB</small></label><label className="asset-upload"><span>Imagem de fundo</span><input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={e=>uploadAsset(e.target.files?.[0],"background")} disabled={!!assetBusy}/><strong>{assetBusy==="background"?"Enviando…":"Escolher imagem"}</strong><small>A imagem será ajustada à tela.</small></label></div>
-        {owner.background_image_url&&<button type="button" className="remove-background" onClick={removeBackground}>Remover imagem de fundo</button>}
+        <div className="asset-upload-grid"><label className="asset-upload"><span>Foto do perfil</span><input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={e=>uploadAsset(e.target.files?.[0],"avatar")} disabled={!!assetBusy}/><strong>{assetBusy==="avatar"?"Enviando…":"Escolher foto"}</strong><small>A foto será recortada automaticamente dentro do círculo · até 5 MB</small></label></div>
         <label className="setting-row">
           <span>
             <strong>Tema escuro</strong>
