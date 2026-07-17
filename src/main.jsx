@@ -1661,14 +1661,17 @@ function DebtorGroup({ group, isRecv, settle, notify }) {
       year: "numeric",
     }),
     openItems = group.items.filter((x) => x.status !== "paid");
-  async function share() {
+  const chargeText = () => `Olá, ${group.name}! Segue o resumo das despesas de ${month}:\n${openItems.map((x) => `• ${x.description} — parcela ${(x.paid_installments || 0) + 1}/${x.installments || 1}: ${money(Number(x.installment_amount || x.remaining_amount))}`).join("\n")}\n\nTotal deste mês: ${money(group.monthly)}\nSaldo total pendente: ${money(group.total)}`;
+  function openWhatsApp(){
+    if(!group.phone)return notify("Cadastre o WhatsApp do devedor para enviar a cobrança.");
+    if(!openItems.length)return notify("Não existem valores pendentes para cobrar.");
+    window.open(`https://wa.me/${String(group.phone).replace(/\D/g,"")}?text=${encodeURIComponent(chargeText())}`,"_blank");
+  }
+  async function downloadCharge() {
     if(sharing)return;
     setSharing(true);
     if(!expanded){setExpanded(true);await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))}
-    const text = `Olá, ${group.name}! Segue o resumo das despesas de ${month}:\n${openItems.map((x) => `• ${x.description} — parcela ${(x.paid_installments || 0) + 1}/${x.installments || 1}: ${money(Number(x.installment_amount || x.remaining_amount))}`).join("\n")}\n\nTotal deste mês: ${money(group.monthly)}\nSaldo total pendente: ${money(group.total)}`;
     const safeName=group.key.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]+/g,"-").replace(/(^-|-$)/g,"");
-    const probeFile=new File([""],`cobranca-${safeName}.png`,{type:"image/png"}),supportsFileShare=Boolean(navigator.canShare?.({files:[probeFile]}));
-    const whatsappWindow=!supportsFileShare&&group.phone?window.open("about:blank","finance-hub-whatsapp"):null;
     try {
       const { default: html2canvas } = await import("html2canvas");
       const canvas = await html2canvas(cardRef.current, {
@@ -1679,27 +1682,15 @@ function DebtorGroup({ group, isRecv, settle, notify }) {
       });
       const blob = await new Promise((r) => canvas.toBlob(r, "image/png"));
       if(!blob)throw new Error("Não foi possível gerar a imagem.");
-      const file = new File(
-        [blob],
-        `cobranca-${safeName}.png`,
-        { type: "image/png" },
-      );
       const link = document.createElement("a");
-      link.download = file.name;
+      link.download = `cobranca-${safeName}.png`;
       link.href = URL.createObjectURL(blob);
       document.body.appendChild(link);
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(link.href), 5000);
-      if(supportsFileShare){
-        try{await navigator.share({files:[file],text,title:`Cobrança de ${group.name}`});notify("Print salvo e preparado para compartilhar.")}catch(error){if(error?.name!=="AbortError")notify("Print salvo. Selecione o WhatsApp para enviar.")}
-      }else{
-        const whatsappUrl=`https://wa.me/${group.phone}?text=${encodeURIComponent(text)}`;
-        if(whatsappWindow)whatsappWindow.location.href=whatsappUrl;else window.open(whatsappUrl,"_blank");
-        notify("Print salvo. Anexe a imagem na conversa do WhatsApp.");
-      }
+      notify("Print da cobrança salvo no dispositivo.");
     } catch(error) {
-      whatsappWindow?.close();
       console.error("Falha ao gerar cobrança",error);
       notify("Não foi possível gerar o print. Tente novamente.");
     }finally{
@@ -1758,14 +1749,7 @@ function DebtorGroup({ group, isRecv, settle, notify }) {
       )}
       <div className="card-actions group-actions">
         {isRecv && (
-          <button
-            className="whatsapp"
-            disabled={!group.phone || !openItems.length || sharing}
-            onClick={share}
-          >
-            <Send />
-            {sharing?"Gerando print…":"Compartilhar cobrança"}
-          </button>
+          <><button className="charge-print" disabled={!openItems.length||sharing} onClick={downloadCharge}><Download/>{sharing?"Gerando print…":"Baixar print"}</button><button className="whatsapp" disabled={!group.phone||!openItems.length} onClick={openWhatsApp}><Send/>Enviar WhatsApp</button></>
         )}
       </div>
     </div>
