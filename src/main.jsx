@@ -41,6 +41,8 @@ import {
 import "./styles.css";
 import { supabase } from "./lib/supabase";
 
+const APP_URL = "https://alencar1992.github.io/FINANCE-HUB/";
+
 const money = (n) =>
   n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const nav = [
@@ -593,7 +595,8 @@ function AuthGate() {
     [error, setError] = useState(""),
     [mode, setMode] = useState("login"),
     [message, setMessage] = useState(""),
-    [mfaReady, setMfaReady] = useState(false);
+    [mfaReady, setMfaReady] = useState(false),
+    [pendingEmail,setPendingEmail]=useState("");
   useEffect(() => {
     (async () => {
       if (!supabase) {
@@ -642,7 +645,7 @@ function AuthGate() {
     const { data, error } = await supabase.auth.signUp({
       email: f.get("email"),
       password: f.get("password"),
-      options: { data: { name: f.get("name").trim() } },
+      options: { data: { name: f.get("name").trim() }, emailRedirectTo: APP_URL },
     });
     if (error) {
       setError(error.message.includes("registered") ? "Este e-mail já está cadastrado." : error.message);
@@ -655,7 +658,8 @@ function AuthGate() {
     }
     setUser(data.user);
   }
-  async function migrateAnonymous(e){e.preventDefault();const f=new FormData(e.currentTarget);setError("");const{error}=await supabase.auth.updateUser({email:f.get("email"),password:f.get("password"),data:{name:f.get("name").trim()}});if(error){setError(error.message);return}localStorage.setItem("finance-hub-permanent","true");setMessage("Conta protegida. Confirme o e-mail; depois entre novamente e ative o autenticador.");}
+  async function migrateAnonymous(e){e.preventDefault();const f=new FormData(e.currentTarget),email=String(f.get("email")).trim();setError("");setPendingEmail(email);const{error}=await supabase.auth.updateUser({email,password:f.get("password"),data:{name:f.get("name").trim()}},{emailRedirectTo:APP_URL});if(error){if(error.message.toLowerCase().includes("different from the old password")){setMessage("A senha já foi salva na tentativa anterior. Reenvie a confirmação para concluir.");return}setError(error.message);return}localStorage.setItem("finance-hub-permanent","true");setMessage("Conta protegida. Confirme o e-mail; depois entre novamente e ative o autenticador.");}
+  async function resendConfirmation(){if(!pendingEmail)return setError("Informe o e-mail usado no cadastro.");setError("");const{error}=await supabase.auth.resend({type:"email_change",email:pendingEmail,options:{emailRedirectTo:APP_URL}});if(error)return setError(error.message);setMessage("Novo e-mail enviado com o endereço correto. Use somente o link mais recente.")}
   async function signIn(e){e.preventDefault();const f=new FormData(e.currentTarget);setError("");const{data,error}=await supabase.auth.signInWithPassword({email:f.get("email"),password:f.get("password")});if(error){setError("E-mail ou senha inválidos, ou e-mail ainda não confirmado.");return}setUser(data.user);location.reload()}
   if (loading)
     return (
@@ -666,7 +670,7 @@ function AuthGate() {
         <p>Preparando seu Finance Hub…</p>
       </div>
     );
-  if (user?.is_anonymous) return <AuthCard title="Proteja sua conta atual" text="Seus dados existentes serão preservados. Cadastre e-mail e senha para converter este acesso em uma conta recuperável." error={error} message={message}><form onSubmit={migrateAnonymous}><label>Seu nome<input name="name" required minLength="2" defaultValue={user.user_metadata?.name||"Alencar"}/></label><label>E-mail<input name="email" type="email" required/></label><label>Senha forte<input name="password" type="password" minLength="10" required autoComplete="new-password"/></label><button className="primary submit">Proteger meus dados</button></form></AuthCard>;
+  if (user?.is_anonymous) return <AuthCard title="Proteja sua conta atual" text="Seus dados existentes serão preservados. Cadastre e-mail e senha para converter este acesso em uma conta recuperável." error={error} message={message}><form onSubmit={migrateAnonymous}><label>Seu nome<input name="name" required minLength="2" defaultValue={user.user_metadata?.name||"Alencar"}/></label><label>E-mail<input name="email" type="email" required onChange={e=>setPendingEmail(e.target.value)}/></label><label>Senha forte<input name="password" type="password" minLength="10" required autoComplete="new-password"/></label><button className="primary submit">Proteger meus dados</button></form>{message&&<button className="auth-switch" onClick={resendConfirmation}>Reenviar confirmação</button>}</AuthCard>;
   if (user && !mfaReady) return <MfaGate user={user} onVerified={()=>location.reload()}/>;
   if (owner) return <FinanceApp owner={owner} />;
   if (user && mfaReady) {
@@ -1895,7 +1899,7 @@ function SettingsModule({ owner, modules, reloadModules, onUpdate, dark, setDark
       .eq("id", owner.id);
     if(error)return notify("Erro ao salvar personalização.");onUpdate({...owner,name,app_name:appName,app_color:appColor});notify("Personalização salva.");
   }
-  async function linkEmail(){if(!email)return notify("Informe um e-mail válido.");const{error}=await supabase.auth.updateUser({email});notify(error?error.message:"Enviamos a confirmação. Abra seu e-mail antes de definir a senha.")}
+  async function linkEmail(){if(!email)return notify("Informe um e-mail válido.");const{error}=await supabase.auth.updateUser({email},{emailRedirectTo:APP_URL});notify(error?error.message:"Enviamos a confirmação. Abra seu e-mail antes de definir a senha.")}
   async function setAccountPassword(){if(password.length<8)return notify("A senha precisa ter pelo menos 8 caracteres.");const{data:{user}}=await supabase.auth.getUser();if(!user?.email)return notify("Confirme primeiro o endereço de e-mail.");const{error}=await supabase.auth.updateUser({password});if(error)return notify(error.message);localStorage.setItem("finance-hub-permanent","true");setPassword("");notify("Senha ativada. Agora sua conta pode ser acessada em outros aparelhos.")}
   async function editModule(m){const next=prompt("Novo nome da função:",m.name)?.trim();if(!next||next===m.name)return;const{error}=await supabase.from("custom_modules").update({name:next}).eq("id",m.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível editar.");await reloadModules();notify("Função atualizada.")}
   async function deleteModule(m){if(!confirm(`Excluir a função ${m.name} e todos os seus registros?`))return;const{error}=await supabase.from("custom_modules").delete().eq("id",m.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível excluir.");await reloadModules();notify("Função excluída.")}
