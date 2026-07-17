@@ -251,7 +251,7 @@ function FinanceApp({ owner }) {
               now = new Date(),
               elapsed = Math.max(0,(now.getFullYear()-first.getFullYear())*12+now.getMonth()-first.getMonth()),
               currentInstallment = x.is_installment?Math.min(x.installment_count,elapsed+1):1,
-              effectiveDate = new Date(first);
+              effectiveDate = x.is_recurring&&x.recurrence_active?new Date(now.getFullYear(),now.getMonth(),Math.min(Number(x.recurrence_day||first.getDate()),new Date(now.getFullYear(),now.getMonth()+1,0).getDate())):new Date(first);
             if(x.is_installment)effectiveDate.setMonth(first.getMonth()+currentInstallment-1);
             return {
               id: x.id,
@@ -261,6 +261,9 @@ function FinanceApp({ owner }) {
               date: effectiveDate.toLocaleDateString("pt-BR",{day:"2-digit",month:"short"}),
               type: x.transaction_type === "income" ? "in" : "out",
               status: currentInstallment>=x.installment_count&&x.is_installment?"Última parcela":({pending:"Pendente",paid:"Pago",received:"Recebido",overdue:"Vencido",cancelled:"Cancelado"}[x.status]),
+              rawStatus:x.status,
+              source:"transaction",
+              recurring:Boolean(x.is_recurring&&x.recurrence_active),
             };
           }),
         );
@@ -287,6 +290,10 @@ function FinanceApp({ owner }) {
       installment_amount: monthly,
       transaction_type: f.get("type") === "in" ? "income" : "expense",
       status: "pending",
+      transaction_date:f.get("date")||new Date().toISOString().slice(0,10),
+      is_recurring:f.get("recurring")==="on",
+      recurrence_active:f.get("recurring")==="on",
+      recurrence_day:f.get("recurring")==="on"?Number(f.get("recurrence_day")||new Date().getDate()):null,
     };
     const { data, error } = await supabase
       .from("transactions")
@@ -414,7 +421,7 @@ function FinanceApp({ owner }) {
               tx={tx}
             />
           ) : page === "Movimentações" ? (
-            <UnifiedMovements owner={owner} baseRows={filtered} open={() => setModal("transaction")}/>
+            <UnifiedMovements owner={owner} baseRows={filtered} open={() => setModal("transaction")} notify={notify} refresh={loadTransactions}/>
           ) : page === "Me devem" ? (
             <ObligationsPage
               owner={owner}
@@ -487,6 +494,7 @@ const initials = (n) =>
     .toUpperCase();
 function TransactionModal({ addTx, close }) {
   const [parcelled, setParcelled] = useState(false),
+    [recurring,setRecurring]=useState(false),
     [total, setTotal] = useState(""),
     [count, setCount] = useState(2);
   const monthly = Number(total || 0) / Number(count || 1);
@@ -534,10 +542,13 @@ function TransactionModal({ addTx, close }) {
           <input
             type="checkbox"
             checked={parcelled}
+            disabled={recurring}
             onChange={(e) => setParcelled(e.target.checked)}
           />
           Parcelar este valor
         </label>
+        <label className="installment-toggle recurring-toggle"><input name="recurring" type="checkbox" checked={recurring} onChange={e=>{setRecurring(e.target.checked);if(e.target.checked)setParcelled(false)}}/>Despesa ou receita recorrente mensal</label>
+        {recurring&&<div className="installment-box"><label>Dia mensal do vencimento<input name="recurrence_day" type="number" min="1" max="31" defaultValue={new Date().getDate()}/></label><div><span>Como funciona</span><strong>Fixa até quitação</strong><small>Aparecerá em cada mês enquanto estiver ativa.</small></div></div>}
         {parcelled && (
           <div className="installment-box">
             <label>
@@ -559,6 +570,7 @@ function TransactionModal({ addTx, close }) {
           </div>
         )}{" "}
         {!parcelled && <input type="hidden" name="installments" value="1" />}
+        <label>Data inicial<input name="date" type="date" required defaultValue={new Date().toISOString().slice(0,10)}/></label>
         <label>
           Observação
           <textarea name="notes" placeholder="Opcional" />
@@ -1073,7 +1085,7 @@ function BarChart({ tx }) {
   );
 }
 
-function Transactions({ rows, open }) {
+function Transactions({ rows, open, onEdit }) {
   const [filter, setFilter] = useState("all");
   const shown = rows.filter((x) => filter === "all" || x.type === filter);
   return (
@@ -1126,7 +1138,7 @@ function Transactions({ rows, open }) {
               {r.type === "in" ? "+ " : "- "}
               {money(r.value)}
             </b>
-            <button aria-label="Mais opções">
+            <button aria-label={r.editable===false?"Gerenciado pelo módulo de origem":"Editar movimentação"} disabled={r.editable===false} onClick={()=>onEdit?.(r)} title={r.editable===false?"Edite no módulo de origem":"Editar movimentação"}>
               <MoreHorizontal />
             </button>
           </div>
@@ -1138,7 +1150,13 @@ function Transactions({ rows, open }) {
     </div>
   );
 }
-function UnifiedMovements({owner,baseRows,open}){const[linked,setLinked]=useState([]);useEffect(()=>{(async()=>{const[{data:o},{data:p}]=await Promise.all([supabase.from("obligations").select("*").eq("owner_id",owner.id).neq("status","cancelled"),supabase.from("card_purchases").select("*,cards(name)").eq("owner_id",owner.id)]);setLinked([...(o||[]).map(x=>({id:`o-${x.id}`,name:`${x.counterparty_name} · ${x.description}`,cat:x.direction==='receivable'?'Me devem':'Eu devo',value:Number(x.installment_amount||x.remaining_amount),date:x.next_due_date?new Date(x.next_due_date+'T12:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}):'Sem data',type:x.direction==='receivable'?'in':'out',status:x.status==='paid'?'Quitado':`Parcela ${Math.min((x.paid_installments||0)+1,x.installments||1)}/${x.installments||1}`})),...(p||[]).map(x=>({id:`p-${x.id}`,name:`${x.cards?.name} · ${x.description}`,cat:`Cartão · ${x.purchased_by}`,value:Number(x.installment_amount),date:new Date(x.first_due_date+'T12:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}),type:'out',status:x.status==='paid'?'Pago':`Parcela ${Math.min(x.paid_installments+1,x.installment_count)}/${x.installment_count}`}))])})()},[owner.id]);return <Transactions rows={[...baseRows,...linked]} open={open}/>}
+function UnifiedMovements({owner,baseRows,open,notify,refresh}){
+  const[linked,setLinked]=useState([]),[editing,setEditing]=useState(null),[editValue,setEditValue]=useState("");
+  useEffect(()=>{(async()=>{const[{data:o},{data:p}]=await Promise.all([supabase.from("obligations").select("*").eq("owner_id",owner.id).neq("status","cancelled"),supabase.from("card_purchases").select("*,cards(name)").eq("owner_id",owner.id)]);setLinked([...(o||[]).map(x=>({id:`o-${x.id}`,name:`${x.counterparty_name} · ${x.description}`,cat:x.direction==='receivable'?'Me devem':'Eu devo',value:Number(x.installment_amount||x.remaining_amount),date:x.next_due_date?new Date(x.next_due_date+'T12:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}):'Sem data',type:x.direction==='receivable'?'in':'out',status:x.status==='paid'?'Quitado':`Parcela ${Math.min((x.paid_installments||0)+1,x.installments||1)}/${x.installments||1}`,editable:false})),...(p||[]).map(x=>({id:`p-${x.id}`,name:`${x.cards?.name} · ${x.description}`,cat:`Cartão · ${x.purchased_by}`,value:Number(x.installment_amount),date:new Date(x.first_due_date+'T12:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}),type:'out',status:x.status==='paid'?'Pago':`Parcela ${Math.min(x.paid_installments+1,x.installment_count)}/${x.installment_count}`,editable:false}))])})()},[owner.id]);
+  async function beginEdit(row){const{data,error}=await supabase.from("transactions").select("*").eq("id",row.id).eq("owner_id",owner.id).single();if(error)return notify("Não foi possível abrir esta movimentação.");setEditing(data);setEditValue(Number(data.total_amount||data.amount).toFixed(2).replace(".",","))}
+  async function saveEdit(e){e.preventDefault();const form=new FormData(e.currentTarget),value=parseBRNumber(editValue);if(!Number.isFinite(value)||value<=0)return notify("Informe um valor válido.");const recurring=form.get("recurring")==="on",status=form.get("status"),{error}=await supabase.from("transactions").update({name:form.get("name"),category:form.get("category"),total_amount:value,amount:value,installment_amount:value,transaction_date:form.get("date"),status,is_recurring:recurring,recurrence_active:recurring&&!['paid','received','cancelled'].includes(status),recurrence_day:recurring?Number(form.get("recurrence_day")):null,notes:form.get("notes")}).eq("id",editing.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível atualizar a movimentação.");setEditing(null);await refresh();notify("Movimentação atualizada.")}
+  async function remove(){const{error}=await supabase.from("transactions").delete().eq("id",editing.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível excluir.");setEditing(null);await refresh();notify("Movimentação excluída.")}
+  return <><Transactions rows={[...baseRows,...linked]} open={open} onEdit={beginEdit}/>{editing&&<Modal title="Editar movimentação" close={()=>setEditing(null)}><form className="form" onSubmit={saveEdit}><label>Descrição<input name="name" defaultValue={editing.name} required/></label><label>Categoria<input name="category" defaultValue={editing.category} required/></label><div className="fields"><label>Valor<input value={editValue} onChange={e=>setEditValue(e.target.value)} inputMode="decimal" required/></label><label>Data<input name="date" type="date" defaultValue={editing.transaction_date} required/></label></div><label>Status<select name="status" defaultValue={editing.status}><option value="pending">Pendente</option><option value={editing.transaction_type==='income'?"received":"paid"}>{editing.transaction_type==='income'?"Recebido":"Pago"}</option><option value="overdue">Vencido</option><option value="cancelled">Cancelado</option></select></label><label className="installment-toggle"><input name="recurring" type="checkbox" defaultChecked={editing.is_recurring}/>Movimentação recorrente mensal</label><label>Dia do vencimento mensal<input name="recurrence_day" type="number" min="1" max="31" defaultValue={editing.recurrence_day||new Date(editing.transaction_date+'T12:00').getDate()}/></label><label>Observações<textarea name="notes" defaultValue={editing.notes||""}/></label><div className="movement-editor-actions"><button type="button" className="danger-text" onClick={remove}>Excluir movimentação</button><button type="button" onClick={()=>setEditing(null)}>Cancelar</button><button className="primary">Salvar alterações</button></div></form></Modal>}</>}
 
 function DebtPage({ notify }) {
   return (
@@ -1375,6 +1393,7 @@ function CustomModulePage({owner,module,notify}){
   useEffect(()=>{load()},[module?.id]);
   if(!module)return <EmptyState text="Função não encontrada."/>;
   const fields=(Array.isArray(module.field_schema)?module.field_schema:[]).filter(f=>f.enabled!==false),automations=Array.isArray(module.automation_schema)?module.automation_schema:[],financial=module.financial_schema||{enabled:false};
+  const entryState=entry=>{const finance=entry.data?._finance;if(finance?.status==="paid")return"paid";const due=finance?.dueDate||(financial.dateField&&entry.data?.[financial.dateField]);return due&&new Date(due+"T23:59:59")<new Date()?"overdue":"pending"},statusLabel=entry=>entryState(entry)==="paid"?(entry.data?._finance?.direction==="income"?"RECEBIDO":"PAGO"):entryState(entry)==="overdue"?"VENCIDO":"PENDENTE",statusCounts=entries.reduce((result,entry)=>{result[entryState(entry)]++;return result},{pending:0,overdue:0,paid:0});
   function whatsappUrl(data,rule){const summary=fields.map(f=>`${f.name}: ${data[f.name]||"—"}`).join("\n"),message=String(rule.message||"").replace(/\{Resumo\}/gi,summary).replace(/\{([^}]+)\}/g,(_,key)=>data[key]||`{${key}}`),phone=String(data[rule.phoneField]||"").replace(/\D/g,"");return `https://wa.me/${phone}?text=${encodeURIComponent(message)}`}
   function runWhatsApp(data,rule){const phone=String(data[rule.phoneField]||"").replace(/\D/g,"");if(!phone)return notify(`Preencha o campo ${rule.phoneField} para enviar.`);window.open(whatsappUrl(data,rule),"_blank")}
   function reminderFor(entry){const rule=financial.enabled&&financial.alertEnabled?{dateField:financial.dateField,daysBefore:financial.daysBefore}:automations.find(a=>a.kind==="reminder");if(!rule||!entry.data?.[rule.dateField]||entry.data?._finance?.status==="paid")return null;const days=Math.ceil((new Date(entry.data[rule.dateField]+"T12:00")-new Date())/86400000);return days<=Number(rule.daysBefore)&&days>=0?`${days===0?"Vence hoje":`Vence em ${days} dia(s)`}`:days<0?`Vencido há ${Math.abs(days)} dia(s)`:null}
@@ -1403,7 +1422,7 @@ function CustomModulePage({owner,module,notify}){
   }
   async function settle(entry){const finance=entry.data?._finance;if(!finance||finance.status==="paid")return;const status=finance.direction==="income"?"received":"paid";const results=await Promise.all([supabase.from("transactions").update({status}).eq("id",finance.transactionId).eq("owner_id",owner.id),finance.obligationId?supabase.from("obligations").update({status:"paid",remaining_amount:0,paid_installments:1}).eq("id",finance.obligationId).eq("owner_id",owner.id):Promise.resolve({error:null}),supabase.from("custom_module_entries").update({data:{...entry.data,_finance:{...finance,status:"paid"}}}).eq("id",entry.id).eq("owner_id",owner.id)]);if(results.some(result=>result.error))return notify("Não foi possível concluir esta baixa.");await load();window.dispatchEvent(new Event("finance-data-changed"));notify(finance.direction==="income"?"Recebimento confirmado.":"Pagamento confirmado.")}
   const inputFor=field=>field.type==="textarea"?<textarea name={field.name} required={field.required}/>:field.type==="select"?<select name={field.name} required={field.required}><option value="">Selecione</option>{(field.options||[]).map(option=><option key={option}>{option}</option>)}</select>:field.type==="number"?<input name={field.name} type="text" inputMode="decimal" placeholder="0,00" pattern="[0-9.]+([,][0-9]{1,2})?|[0-9]+([.][0-9]{1,2})?" required={field.required}/>:<input name={field.name} type={field.type||"text"} required={field.required}/>;
-  return <div className="custom-module-page"><div className="page-head"><div><h2>{module.name}</h2><p>Tela criada automaticamente com campos, ações e regras personalizadas.</p></div><button className="primary" onClick={()=>setOpen(true)}><Plus/>Novo registro</button></div>{open&&<form className="inline-form" onSubmit={add}>{fields.map(field=><label key={field.name}>{field.name}{inputFor(field)}</label>)}<div className="form-actions"><button type="button" onClick={()=>setOpen(false)}>Cancelar</button><button className="primary">Salvar registro</button></div></form>}<div className="page-panel"><div className="panel-title"><h2>Registros</h2></div><div className="dynamic-table">{entries.map(entry=><div className="dynamic-row custom-entry" key={entry.id}>{fields.map(field=><span key={field.name}><small>{field.name}</small><strong>{field.name===financial.valueField&&Number.isFinite(parseBRNumber(entry.data?.[field.name]))?money(parseBRNumber(entry.data?.[field.name])):entry.data?.[field.name]||"—"}</strong></span>)}{reminderFor(entry)&&<i className="entry-reminder"><Bell/>{reminderFor(entry)}</i>}<div className="entry-actions">{entry.data?._finance&&<button className="finance-action" disabled={entry.data._finance.status==="paid"} onClick={()=>settle(entry)}><Check/>{entry.data._finance.status==="paid"?(entry.data._finance.direction==="income"?"Recebido":"Pago"):(entry.data._finance.direction==="income"?"Receber":"Pagar")}</button>}{automations.filter(a=>a.kind==="whatsapp"&&a.trigger==="manual").map(rule=><button key={rule.id} onClick={()=>runWhatsApp(entry.data,rule)}><Send/>{rule.name}</button>)}</div></div>)}{!entries.length&&<EmptyState text="Nenhum registro nesta função."/>}</div></div></div>
+  return <div className="custom-module-page"><div className="page-head"><div><h2>{module.name}</h2><p>Tela criada automaticamente com campos, ações e regras personalizadas.</p></div><button className="primary" onClick={()=>setOpen(true)}><Plus/>Novo registro</button></div>{financial.enabled&&<div className="module-status-report"><div><small>Pendentes</small><strong>{statusCounts.pending}</strong></div><div className="overdue"><small>Vencidos</small><strong>{statusCounts.overdue}</strong><span>Continuam visíveis até a quitação</span></div><div className="paid"><small>Quitados</small><strong>{statusCounts.paid}</strong></div></div>}{open&&<form className="inline-form" onSubmit={add}>{fields.map(field=><label key={field.name}>{field.name}{inputFor(field)}</label>)}<div className="form-actions"><button type="button" onClick={()=>setOpen(false)}>Cancelar</button><button className="primary">Salvar registro</button></div></form>}<div className="page-panel"><div className="panel-title"><h2>Registros</h2></div><div className="dynamic-table">{entries.map(entry=><div className={`dynamic-row custom-entry ${entryState(entry)}`} key={entry.id}>{fields.map(field=><span key={field.name}><small>{field.name}</small><strong>{/^status$/i.test(field.name)?statusLabel(entry):field.name===financial.valueField&&Number.isFinite(parseBRNumber(entry.data?.[field.name]))?money(parseBRNumber(entry.data?.[field.name])):entry.data?.[field.name]||"—"}</strong></span>)}{!fields.some(field=>/^status$/i.test(field.name))&&<i className={`entry-status ${entryState(entry)}`}>{statusLabel(entry)}</i>}{reminderFor(entry)&&<i className="entry-reminder"><Bell/>{reminderFor(entry)}</i>}<div className="entry-actions">{entry.data?._finance&&<button className="finance-action" disabled={entry.data._finance.status==="paid"} onClick={()=>settle(entry)}><Check/>{entry.data._finance.status==="paid"?(entry.data._finance.direction==="income"?"Recebido":"Pago"):(entry.data._finance.direction==="income"?"Receber":"Pagar")}</button>}{automations.filter(a=>a.kind==="whatsapp"&&a.trigger==="manual").map(rule=><button key={rule.id} onClick={()=>runWhatsApp(entry.data,rule)}><Send/>{rule.name}</button>)}</div></div>)}{!entries.length&&<EmptyState text="Nenhum registro nesta função."/>}</div></div></div>
 }
 
 const normalizeName = (n) =>
@@ -1922,7 +1941,7 @@ function CalendarModule({ owner, tx }) {
           type: "out",
           label: `${x.cards?.name || "Cartão"} · ${installment}/${x.installment_count}: ${money(Number(x.installment_amount))}`,
         }]}),
-        ...(transactions||[]).flatMap(x=>{const first=new Date(x.transaction_date+"T12:00"),elapsed=(year-first.getFullYear())*12+month-first.getMonth();if(x.is_installment){if(elapsed<0||elapsed>=Number(x.installment_count||1))return[];return[{id:`mov-${x.id}-${elapsed}`,day:first.getDate(),type:x.transaction_type==="income"?"in":"out",label:`${x.name} · ${elapsed+1}/${x.installment_count}`}]}if(x.transaction_date<start||x.transaction_date>end)return[];return[{id:`mov-${x.id}`,day:first.getDate(),type:x.transaction_type==="income"?"in":"out",label:x.name}]}),
+        ...(transactions||[]).flatMap(x=>{const first=new Date(x.transaction_date+"T12:00"),elapsed=(year-first.getFullYear())*12+month-first.getMonth();if(x.is_recurring&&x.recurrence_active){if(elapsed<0||(x.recurrence_end_date&&x.recurrence_end_date<start))return[];return[{id:`mov-rec-${x.id}-${year}-${month}`,day:Math.min(Number(x.recurrence_day||first.getDate()),new Date(year,month+1,0).getDate()),type:x.transaction_type==="income"?"in":"out",label:`${x.name} · recorrente`}]}if(x.is_installment){if(elapsed<0||elapsed>=Number(x.installment_count||1))return[];return[{id:`mov-${x.id}-${elapsed}`,day:first.getDate(),type:x.transaction_type==="income"?"in":"out",label:`${x.name} · ${elapsed+1}/${x.installment_count}`}]}if(x.transaction_date<start||x.transaction_date>end)return[];return[{id:`mov-${x.id}`,day:first.getDate(),type:x.transaction_type==="income"?"in":"out",label:x.name}]}),
         ...(subscriptions||[]).map(x=>({id:`assinatura-${x.id}-${year}-${month}`,day:Math.min(Number(x.due_day||1),new Date(year,month+1,0).getDate()),type:"out",label:`${x.name}: ${money(Number(x.amount))}`})),
       ]);
     })();
