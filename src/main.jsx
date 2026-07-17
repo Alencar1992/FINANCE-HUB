@@ -1655,7 +1655,8 @@ function ObligationsPage({ owner, direction, notify }) {
 function DebtorGroup({ group, isRecv, settle, notify }) {
   const [expanded, setExpanded] = useState(true),
     [sharing,setSharing]=useState(false),
-    cardRef = useRef(null);
+    cardRef = useRef(null),
+    captureRef=useRef(null);
   const month = new Date().toLocaleDateString("pt-BR", {
       month: "long",
       year: "numeric",
@@ -1674,11 +1675,10 @@ function DebtorGroup({ group, isRecv, settle, notify }) {
     const safeName=group.key.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]+/g,"-").replace(/(^-|-$)/g,"");
     try {
       const { default: html2canvas } = await import("html2canvas");
-      const canvas = await html2canvas(cardRef.current, {
+      const canvas = await html2canvas(captureRef.current, {
         scale: 2,
         backgroundColor: "#ffffff",
         useCORS: true,
-        onclone:documentClone=>[...documentClone.querySelectorAll("[data-charge-card]")].find(node=>node.dataset.chargeCard===group.key)?.classList.add("charge-capture"),
       });
       const blob = await new Promise((r) => canvas.toBlob(r, "image/png"));
       if(!blob)throw new Error("Não foi possível gerar a imagem.");
@@ -1699,6 +1699,7 @@ function DebtorGroup({ group, isRecv, settle, notify }) {
   }
   return (
     <div className="debt-card debtor-group" ref={cardRef} data-charge-card={group.key}>
+      <div className="charge-export-stage" aria-hidden="true"><div className="charge-export-card" ref={captureRef}><div className="charge-export-title"><FileText/><strong>Resumo de Débitos</strong></div><div className="charge-export-client"><b>Cliente:</b><span>{group.name}</span></div><div className="charge-export-items">{openItems.map(item=><div className="charge-export-line" key={item.id}><div><strong>{item.description}</strong><small>({item.next_due_date?new Date(item.next_due_date+"T12:00").toLocaleDateString("pt-BR"):"Sem vencimento"})</small></div><b>{money(Number(item.remaining_amount||item.installment_amount||0))}</b></div>)}</div><div className="charge-export-total"><span>VALOR TOTAL EM ABERTO</span><strong>{money(group.total)}</strong></div><small className="charge-export-date">Resumo gerado em {new Date().toLocaleDateString("pt-BR")}</small></div></div>
       <button className="group-head" onClick={() => setExpanded(!expanded)}>
         <div className="debt-avatar">{group.name[0]}</div>
         <div>
