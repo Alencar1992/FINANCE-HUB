@@ -179,7 +179,9 @@ function FinanceApp({ owner }) {
     [customModules, setCustomModules] = useState([]),
     [profile,setProfile]=useState(owner),
     [profileMenu,setProfileMenu]=useState(false),
-    [appDialog,setAppDialog]=useState(null);
+    [appDialog,setAppDialog]=useState(null),
+    [avatarUrl,setAvatarUrl]=useState(""),
+    [backgroundUrl,setBackgroundUrl]=useState("");
   const dialogResolver=useRef(null);
   const notify = (m) => {
     setToast(m);
@@ -212,6 +214,7 @@ function FinanceApp({ owner }) {
       events.forEach((event) => removeEventListener(event, reset));
     };
   }, []);
+  useEffect(()=>{(async()=>{async function signed(path){if(!path)return"";const{data}=await supabase.storage.from("finance-assets").createSignedUrl(path,3600);return data?.signedUrl||""}setAvatarUrl(await signed(profile.avatar_url));setBackgroundUrl(await signed(profile.background_image_url))})()},[profile.avatar_url,profile.background_image_url]);
   const filtered = useMemo(
     () =>
       tx.filter((x) =>
@@ -299,7 +302,7 @@ function FinanceApp({ owner }) {
     );
   }
   return (
-    <div className={dark ? "app dark" : "app"} style={{"--violet":profile.app_color||"#6445ED"}}>
+    <div className={`${dark ? "app dark" : "app"}${backgroundUrl?" has-background-image":""}`} style={{"--violet":profile.app_color||"#6445ED","--user-bg":profile.background_color||"#F6F8FC",backgroundImage:backgroundUrl?`linear-gradient(#071c3a18,#071c3a18),url(${backgroundUrl})`:"none"}}>
       <aside className={menu ? "sidebar open" : "sidebar"}>
         <div className="brand">
           <span>
@@ -327,7 +330,7 @@ function FinanceApp({ owner }) {
           ))}
         </nav>
         <div className="profile-wrap"><button className="profile" onClick={()=>setProfileMenu(!profileMenu)}>
-          <span>{initials(profile.name)}</span>
+          <span>{avatarUrl?<img src={avatarUrl} alt="Foto do perfil"/>:initials(profile.name)}</span>
           <div>
             <strong>{profile.name}</strong>
             <small>Perfil pessoal</small>
@@ -381,7 +384,7 @@ function FinanceApp({ owner }) {
               <Plus />
               Nova movimentação
             </button>
-            <span className="avatar">{initials(owner.name)}</span>
+            <span className="avatar">{avatarUrl?<img src={avatarUrl} alt="Foto do perfil"/>:initials(owner.name)}</span>
           </div>
         </header>
         <div className="content">
@@ -746,10 +749,11 @@ function AuthGate() {
 function AuthCard({title,text,error,message,children}){return <div className="onboarding"><div className="onboard-brand"><span><WalletCards/></span>Finance Hub</div><div className="onboard-card"><div className="onboard-icon"><ShieldCheck/></div><h1>{title}</h1><p>{text}</p>{error&&<div className="form-error">{error}</div>}{message&&<div className="form-success">{message}</div>}{children}</div></div>}
 
 function MfaGate({user,onVerified}){
-  const [factor,setFactor]=useState(null),[code,setCode]=useState(""),[error,setError]=useState(""),[loading,setLoading]=useState(true);
+  const [factor,setFactor]=useState(null),[code,setCode]=useState(""),[error,setError]=useState(""),[loading,setLoading]=useState(true),[copied,setCopied]=useState(false);
   useEffect(()=>{(async()=>{const{data}=await supabase.auth.mfa.listFactors();const verified=data?.totp?.find(x=>x.status==="verified");if(verified){setFactor(verified);setLoading(false);return}const enrolled=await supabase.auth.mfa.enroll({factorType:"totp",friendlyName:`Finance Hub - ${user.email}`});if(enrolled.error)setError(authErrorPt(enrolled.error,"Não foi possível preparar a verificação em duas etapas."));else setFactor(enrolled.data);setLoading(false)})()},[]);
   async function verify(e){e.preventDefault();setError("");const challenge=await supabase.auth.mfa.challenge({factorId:factor.id});if(challenge.error)return setError(authErrorPt(challenge.error,"Não foi possível iniciar a verificação."));const result=await supabase.auth.mfa.verify({factorId:factor.id,challengeId:challenge.data.id,code:code.trim()});if(result.error)return setError("Código inválido. Confira o aplicativo autenticador.");onVerified()}
-  return <AuthCard title="Verificação em duas etapas" text={factor?.status==="verified"?"Digite o código atual do seu aplicativo autenticador.":"Escaneie o QR Code no Google Authenticator, Microsoft Authenticator ou aplicativo compatível."} error={error}>{loading?<p>Preparando autenticação…</p>:<>{factor?.totp?.qr_code&&<img className="mfa-qr" src={factor.totp.qr_code} alt="QR Code para configurar autenticação em duas etapas"/>}{factor?.totp?.secret&&<small className="mfa-secret">Chave manual: {factor.totp.secret}</small>}<form onSubmit={verify}><label>Código de 6 dígitos<input value={code} onChange={e=>setCode(e.target.value.replace(/\D/g,"").slice(0,6))} inputMode="numeric" pattern="[0-9]{6}" required autoFocus/></label><button className="primary submit" disabled={code.length!==6}>Verificar e entrar</button></form></>}</AuthCard>
+  async function copySecret(){if(!factor?.totp?.secret)return;await navigator.clipboard.writeText(factor.totp.secret);setCopied(true);setTimeout(()=>setCopied(false),2200)}
+  return <AuthCard title="Verificação em duas etapas" text={factor?.status==="verified"?"Digite o código atual do seu aplicativo autenticador.":"Escolha abaixo como configurar o autenticador."} error={error}>{loading?<p>Preparando autenticação…</p>:<>{factor?.totp&&<div className="mfa-setup"><div className="mfa-method"><strong>Opção 1 — Em outro aparelho</strong><span>Escaneie o código usando Google Authenticator, Microsoft Authenticator ou aplicativo compatível.</span>{factor.totp.qr_code&&<img className="mfa-qr" src={factor.totp.qr_code} alt="Código QR para configurar a verificação em duas etapas"/>}</div><div className="mfa-method mobile-method"><strong>Opção 2 — Neste mesmo celular</strong><span>Abra diretamente no autenticador. Se o aplicativo não abrir, copie a chave e adicione uma conta manualmente.</span>{factor.totp.uri&&<a className="mfa-open-app" href={factor.totp.uri}>Abrir no aplicativo autenticador</a>}<button className="mfa-copy" type="button" onClick={copySecret}>{copied?<Check/>:<FileText/>}{copied?"Chave copiada":"Copiar chave manual"}</button><code>{factor.totp.secret}</code><ol><li>Abra seu aplicativo autenticador.</li><li>Toque em adicionar conta ou inserir chave de configuração.</li><li>Cole a chave, escolha o tipo “Baseado em tempo” e salve.</li><li>Volte ao Finance Hub e informe o código de seis dígitos.</li></ol></div></div>}<form onSubmit={verify}><label>Código de 6 dígitos<input value={code} onChange={e=>setCode(e.target.value.replace(/\D/g,"").slice(0,6))} inputMode="numeric" pattern="[0-9]{6}" required autoFocus/></label><button className="primary submit" disabled={code.length!==6}>Verificar e entrar</button></form></>}</AuthCard>
 }
 
 function Dashboard({ owner, setPage, notify, tx }) {
@@ -1940,16 +1944,18 @@ function ReportsModule({ tx }) {
   );
 }
 function SettingsModule({ owner, modules, reloadModules, onUpdate, dark, setDark, notify, ask }) {
-  const [name, setName] = useState(owner.name),[appName,setAppName]=useState(owner.app_name||"Finance Hub"),[appColor,setAppColor]=useState(owner.app_color||"#6445ED"),[email,setEmail]=useState(""),[password,setPassword]=useState(""),[showPassword,setShowPassword]=useState(false),[savingPassword,setSavingPassword]=useState(false);
+  const [name, setName] = useState(owner.name),[appName,setAppName]=useState(owner.app_name||"Finance Hub"),[appColor,setAppColor]=useState(owner.app_color||"#6445ED"),[backgroundColor,setBackgroundColor]=useState(owner.background_color||"#F6F8FC"),[email,setEmail]=useState(""),[password,setPassword]=useState(""),[showPassword,setShowPassword]=useState(false),[savingPassword,setSavingPassword]=useState(false),[assetBusy,setAssetBusy]=useState("");
   useEffect(()=>{supabase.auth.getUser().then(({data})=>setEmail(data.user?.email||""))},[]);
   async function save(e) {
     e.preventDefault();
     const { error } = await supabase
       .from("owners")
-      .update({ name,app_name:appName,app_color:appColor, updated_at: new Date().toISOString() })
+      .update({ name,app_name:appName,app_color:appColor,background_color:backgroundColor, updated_at: new Date().toISOString() })
       .eq("id", owner.id);
-    if(error)return notify("Erro ao salvar personalização.");onUpdate({...owner,name,app_name:appName,app_color:appColor});notify("Personalização salva.");
+    if(error)return notify("Erro ao salvar personalização.");onUpdate({...owner,name,app_name:appName,app_color:appColor,background_color:backgroundColor});notify("Personalização salva.");
   }
+  async function uploadAsset(file,kind){if(!file)return;if(!["image/jpeg","image/png","image/webp","image/gif"].includes(file.type))return notify("Escolha uma imagem JPG, PNG, WEBP ou GIF.");if(file.size>5*1024*1024)return notify("A imagem deve ter no máximo 5 MB.");setAssetBusy(kind);const extension=(file.name.split(".").pop()||"jpg").toLowerCase().replace(/[^a-z0-9]/g,""),path=`${owner.id}/${kind}-${Date.now()}.${extension}`,column=kind==="avatar"?"avatar_url":"background_image_url",oldPath=owner[column];const{error:uploadError}=await supabase.storage.from("finance-assets").upload(path,file,{contentType:file.type});if(uploadError){setAssetBusy("");return notify("Não foi possível enviar a imagem.")}const{error}=await supabase.from("owners").update({[column]:path,updated_at:new Date().toISOString()}).eq("id",owner.id);setAssetBusy("");if(error){await supabase.storage.from("finance-assets").remove([path]);return notify("A imagem foi enviada, mas não foi possível vinculá-la ao perfil.")}if(oldPath)await supabase.storage.from("finance-assets").remove([oldPath]);onUpdate({...owner,[column]:path});notify(kind==="avatar"?"Foto de perfil atualizada.":"Imagem de fundo atualizada.")}
+  async function removeBackground(){if(owner.background_image_url)await supabase.storage.from("finance-assets").remove([owner.background_image_url]);const{error}=await supabase.from("owners").update({background_image_url:null}).eq("id",owner.id);if(error)return notify("Não foi possível remover a imagem.");onUpdate({...owner,background_image_url:null});notify("Imagem de fundo removida.")}
   async function linkEmail(){if(!email)return notify("Informe um e-mail válido.");const{error}=await supabase.auth.updateUser({email},{emailRedirectTo:APP_URL});notify(error?authErrorPt(error,"Não foi possível atualizar o e-mail."):"Enviamos a confirmação para o novo e-mail.")}
   async function setAccountPassword(){if(password.length<10)return notify("A nova senha precisa ter pelo menos 10 caracteres.");setSavingPassword(true);const{data:{user}}=await supabase.auth.getUser();if(!user?.email){setSavingPassword(false);return notify("Confirme primeiro o endereço de e-mail.")}const{error}=await supabase.auth.updateUser({password});setSavingPassword(false);if(error)return notify(authErrorPt(error,"Não foi possível alterar a senha."));setPassword("");setShowPassword(false);notify("Senha alterada com sucesso.")}
   async function editModule(m){const result=await ask({kind:"input",title:"Editar função",message:"Altere o nome que será exibido no menu do Finance Hub.",value:m.name,confirmLabel:"Salvar alteração"}),next=result?.trim();if(!next||next===m.name)return;const{error}=await supabase.from("custom_modules").update({name:next}).eq("id",m.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível editar.");await reloadModules();notify("Função atualizada.")}
@@ -1964,6 +1970,9 @@ function SettingsModule({ owner, modules, reloadModules, onUpdate, dark, setDark
         </label>
         <label>Nome do aplicativo<input value={appName} onChange={e=>setAppName(e.target.value)} maxLength="40"/></label>
         <label>Cor principal<input type="color" value={appColor} onChange={e=>setAppColor(e.target.value)}/></label>
+        <label>Cor de fundo<input type="color" value={backgroundColor} onChange={e=>setBackgroundColor(e.target.value)}/></label>
+        <div className="asset-upload-grid"><label className="asset-upload"><span>Foto do perfil</span><input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={e=>uploadAsset(e.target.files?.[0],"avatar")} disabled={!!assetBusy}/><strong>{assetBusy==="avatar"?"Enviando…":"Escolher foto"}</strong><small>JPG, PNG, WEBP ou GIF · até 5 MB</small></label><label className="asset-upload"><span>Imagem de fundo</span><input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={e=>uploadAsset(e.target.files?.[0],"background")} disabled={!!assetBusy}/><strong>{assetBusy==="background"?"Enviando…":"Escolher imagem"}</strong><small>A imagem será ajustada à tela.</small></label></div>
+        {owner.background_image_url&&<button type="button" className="remove-background" onClick={removeBackground}>Remover imagem de fundo</button>}
         <label className="setting-row">
           <span>
             <strong>Tema escuro</strong>
