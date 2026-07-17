@@ -166,10 +166,21 @@ function FinanceApp({ owner }) {
     [query, setQuery] = useState(""),
     [customModules, setCustomModules] = useState([]),
     [profile,setProfile]=useState(owner),
-    [profileMenu,setProfileMenu]=useState(false);
+    [profileMenu,setProfileMenu]=useState(false),
+    [appDialog,setAppDialog]=useState(null);
+  const dialogResolver=useRef(null);
   const notify = (m) => {
     setToast(m);
     setTimeout(() => setToast(""), 2600);
+  };
+  const ask = (options) => new Promise((resolve) => {
+    dialogResolver.current = resolve;
+    setAppDialog(options);
+  });
+  const answerDialog = (value) => {
+    dialogResolver.current?.(value);
+    dialogResolver.current = null;
+    setAppDialog(null);
   };
   useEffect(() => {
     const IDLE_LIMIT = 15 * 60 * 1000;
@@ -400,6 +411,7 @@ function FinanceApp({ owner }) {
               dark={dark}
               setDark={setDark}
               notify={notify}
+              ask={ask}
             />
           ) : page.startsWith("module:") ? (
             <CustomModulePage owner={owner} module={customModules.find(m=>`module:${m.id}`===page)} notify={notify}/>
@@ -420,6 +432,7 @@ function FinanceApp({ owner }) {
           />
         </Modal>
       )}
+      {appDialog && <AppDialog dialog={appDialog} onAnswer={answerDialog} />}
       {toast && (
         <div className="toast">
           <Check />
@@ -1889,7 +1902,7 @@ function ReportsModule({ tx }) {
     </div>
   );
 }
-function SettingsModule({ owner, modules, reloadModules, onUpdate, dark, setDark, notify }) {
+function SettingsModule({ owner, modules, reloadModules, onUpdate, dark, setDark, notify, ask }) {
   const [name, setName] = useState(owner.name),[appName,setAppName]=useState(owner.app_name||"Finance Hub"),[appColor,setAppColor]=useState(owner.app_color||"#6445ED"),[email,setEmail]=useState(""),[password,setPassword]=useState("");
   async function save(e) {
     e.preventDefault();
@@ -1901,8 +1914,8 @@ function SettingsModule({ owner, modules, reloadModules, onUpdate, dark, setDark
   }
   async function linkEmail(){if(!email)return notify("Informe um e-mail válido.");const{error}=await supabase.auth.updateUser({email},{emailRedirectTo:APP_URL});notify(error?error.message:"Enviamos a confirmação. Abra seu e-mail antes de definir a senha.")}
   async function setAccountPassword(){if(password.length<8)return notify("A senha precisa ter pelo menos 8 caracteres.");const{data:{user}}=await supabase.auth.getUser();if(!user?.email)return notify("Confirme primeiro o endereço de e-mail.");const{error}=await supabase.auth.updateUser({password});if(error)return notify(error.message);localStorage.setItem("finance-hub-permanent","true");setPassword("");notify("Senha ativada. Agora sua conta pode ser acessada em outros aparelhos.")}
-  async function editModule(m){const next=prompt("Novo nome da função:",m.name)?.trim();if(!next||next===m.name)return;const{error}=await supabase.from("custom_modules").update({name:next}).eq("id",m.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível editar.");await reloadModules();notify("Função atualizada.")}
-  async function deleteModule(m){if(!confirm(`Excluir a função ${m.name} e todos os seus registros?`))return;const{error}=await supabase.from("custom_modules").delete().eq("id",m.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível excluir.");await reloadModules();notify("Função excluída.")}
+  async function editModule(m){const result=await ask({kind:"input",title:"Editar função",message:"Altere o nome que será exibido no menu do Finance Hub.",value:m.name,confirmLabel:"Salvar alteração"}),next=result?.trim();if(!next||next===m.name)return;const{error}=await supabase.from("custom_modules").update({name:next}).eq("id",m.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível editar.");await reloadModules();notify("Função atualizada.")}
+  async function deleteModule(m){const accepted=await ask({kind:"confirm",tone:"danger",title:"Excluir função?",message:`A função “${m.name}” e todos os registros vinculados serão excluídos permanentemente.`,confirmLabel:"Excluir função"});if(!accepted)return;const{error}=await supabase.from("custom_modules").delete().eq("id",m.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível excluir.");await reloadModules();notify("Função excluída.")}
   return (
     <div className="settings-layout"><div className="settings-panel">
       <h2>Perfil e aparência</h2>
@@ -1982,6 +1995,28 @@ function Modal({ title, close, children }) {
       </div>
     </div>
   );
+}
+
+function AppDialog({ dialog, onAnswer }) {
+  const [value,setValue]=useState(dialog.value||"");
+  const inputRef=useRef(null);
+  useEffect(()=>{
+    inputRef.current?.focus();
+    const key=(e)=>{if(e.key==="Escape")onAnswer(dialog.kind==="input"?null:false)};
+    addEventListener("keydown",key);
+    return()=>removeEventListener("keydown",key);
+  },[]);
+  const cancel=()=>onAnswer(dialog.kind==="input"?null:false);
+  const confirm=()=>onAnswer(dialog.kind==="input"?value:true);
+  return <div className="app-dialog-bg" role="presentation" onMouseDown={cancel}>
+    <div className={`app-dialog ${dialog.tone||"default"}`} role="dialog" aria-modal="true" aria-labelledby="app-dialog-title" onMouseDown={e=>e.stopPropagation()}>
+      <div className="app-dialog-icon">{dialog.tone==="danger"?<AlertTriangle/>:<ShieldCheck/>}</div>
+      <h2 id="app-dialog-title">{dialog.title}</h2>
+      <p>{dialog.message}</p>
+      {dialog.kind==="input"&&<label>Nome da função<input ref={inputRef} value={value} onChange={e=>setValue(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&value.trim())confirm()}} maxLength="50"/></label>}
+      <div className="app-dialog-actions"><button onClick={cancel}>Cancelar</button><button className="primary" onClick={confirm} disabled={dialog.kind==="input"&&!value.trim()}>{dialog.confirmLabel||"Confirmar"}</button></div>
+    </div>
+  </div>;
 }
 
 createRoot(document.getElementById("root")).render(<AuthGate />);
