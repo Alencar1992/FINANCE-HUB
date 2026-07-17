@@ -1201,18 +1201,29 @@ function CardsPage({ intro, total, value, children }) {
 function FunctionBuilder({ owner, notify, onCreated, onCancel }) {
   const [step, setStep] = useState(1),
     [name, setName] = useState(""),
-    [fields, setFields] = useState(["Cliente", "Valor", "Data", "Status"]),
-    [customField,setCustomField]=useState("");
+    [fields, setFields] = useState([
+      {id:"cliente",name:"Cliente",type:"text",required:true,enabled:true},
+      {id:"valor",name:"Valor",type:"number",required:true,enabled:true},
+      {id:"data",name:"Data",type:"date",required:true,enabled:true},
+      {id:"status",name:"Status",type:"text",required:false,enabled:true},
+      {id:"quilometragem",name:"Quilometragem",type:"number",required:false,enabled:true},
+    ]),
+    [customField,setCustomField]=useState(""),
+    [automationDraft,setAutomationDraft]=useState(null),
+    [automations,setAutomations]=useState([]);
+  const inferType=(value)=>/telefone|whatsapp|celular/i.test(value)?"tel":/e-mail|email/i.test(value)?"email":/valor|preço|quantidade|km|quilometragem/i.test(value)?"number":/data|vencimento/i.test(value)?"date":"text";
+  const addField=(fieldName,type=inferType(fieldName))=>{const clean=fieldName.trim();if(!clean||fields.some(f=>f.name.toLocaleLowerCase("pt-BR")===clean.toLocaleLowerCase("pt-BR")))return;setFields(v=>[...v,{id:`campo_${Date.now()}`,name:clean,type,required:false,enabled:true}])};
+  function interpretRequest(){const value=customField.trim();if(!value)return;if(/whats|mensagem|cobrar/i.test(value)){let phone=fields.find(f=>f.type==="tel"||/telefone|whats|celular/i.test(f.name));if(!phone){phone={id:`campo_${Date.now()}`,name:"Telefone/WhatsApp",type:"tel",required:true,enabled:true};setFields(v=>[...v,phone])}setAutomationDraft({kind:"whatsapp",name:"Enviar WhatsApp",trigger:/ap[oó]s|salvar|cadastrar/i.test(value)?"after_save":"manual",phoneField:phone.name,message:"Olá {Cliente}, seguem as informações do seu registro: {Resumo}."});setCustomField("");return}if(/alerta|lembrete|avisar|vencimento/i.test(value)){let date=fields.find(f=>f.type==="date");if(!date){date={id:`campo_${Date.now()}`,name:"Data de vencimento",type:"date",required:true,enabled:true};setFields(v=>[...v,date])}setAutomationDraft({kind:"reminder",name:"Lembrete de vencimento",dateField:date.name,daysBefore:3,message:"Você possui um compromisso próximo do vencimento."});setCustomField("");return}addField(value);setCustomField("")}
+  function saveAutomation(){if(!automationDraft)return;setAutomations(v=>[...v,{...automationDraft,id:`regra_${Date.now()}`}]);setAutomationDraft(null)}
+  const updateField=(id,changes)=>setFields(v=>v.map(f=>f.id===id?{...f,...changes}:f));
   async function finish() {
     const { data, error } = await supabase
       .from("custom_modules")
       .insert({
         owner_id: owner.id,
         name: name || "Nova função",
-        field_schema: fields.map((x) => ({
-          name: x,
-          type: /valor|preço|quantidade|km|quilometragem/i.test(x)?"number":/data|vencimento/i.test(x)?"date":"text",
-        })),
+        field_schema: fields.filter(x=>x.enabled).map(({name,type,required})=>({name,type,required})),
+        automation_schema: automations,
       }).select().single();
     if (error)
       return notify(
@@ -1282,34 +1293,19 @@ function FunctionBuilder({ owner, notify, onCreated, onCancel }) {
         {step === 2 && (
           <>
             <h3>Quais informações deseja registrar?</h3>
-            {["Cliente", "Valor", "Data", "Status", "Quilometragem"].map(
-              (x) => (
-                <label className="check" key={x}>
-                  <input
-                    type="checkbox"
-                    checked={fields.includes(x)}
-                    onChange={() =>
-                      setFields((v) =>
-                        v.includes(x) ? v.filter((f) => f !== x) : [...v, x],
-                      )
-                    }
-                  />
-                  <span>
-                    <Check />
-                  </span>
-                  {x}
-                </label>
-              ),
-            )}
-            <div className="custom-field-add"><input value={customField} onChange={e=>setCustomField(e.target.value)} placeholder="Outro campo, ex.: Endereço"/><button onClick={()=>{const value=customField.trim();if(value&&!fields.includes(value))setFields(v=>[...v,value]);setCustomField("")}}><Plus/>Adicionar campo</button></div>
-            <div className="selected-fields">{fields.filter(x=>!["Cliente","Valor","Data","Status","Quilometragem"].includes(x)).map(x=><span key={x}>{x}<button onClick={()=>setFields(v=>v.filter(f=>f!==x))}><X/></button></span>)}</div>
+            <p className="builder-help">Edite o nome, o tipo e a obrigatoriedade de cada informação.</p>
+            <div className="field-editor-list">{fields.map(field=><div className={`field-editor ${field.enabled?"":"disabled"}`} key={field.id}><label className="field-enabled"><input type="checkbox" checked={field.enabled} onChange={e=>updateField(field.id,{enabled:e.target.checked})}/><span><Check/></span></label><input value={field.name} onChange={e=>updateField(field.id,{name:e.target.value})} aria-label="Nome do campo"/><select value={field.type} onChange={e=>updateField(field.id,{type:e.target.value})} aria-label="Tipo do campo"><option value="text">Texto</option><option value="number">Número/valor</option><option value="date">Data</option><option value="tel">Telefone</option><option value="email">E-mail</option><option value="textarea">Texto longo</option></select><label className="required-toggle"><input type="checkbox" checked={field.required} onChange={e=>updateField(field.id,{required:e.target.checked})}/>Obrigatório</label><button className="remove-field" onClick={()=>setFields(v=>v.filter(f=>f.id!==field.id))} aria-label={`Remover ${field.name}`}><X/></button></div>)}</div>
+            <div className="smart-field-add"><div><Sparkles/><span><strong>Adicionar campo ou ação</strong><small>Ex.: Telefone, data de entrega, enviar WhatsApp após salvar</small></span></div><div><input value={customField} onChange={e=>setCustomField(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();interpretRequest()}}} placeholder="Descreva o que deseja criar"/><button onClick={interpretRequest}><Plus/>Analisar e adicionar</button></div></div>
+            {automationDraft?.kind==="whatsapp"&&<div className="automation-builder"><div className="automation-title"><Send/><div><strong>Configurar envio pelo WhatsApp</strong><small>Responda às perguntas para criar a ação corretamente.</small></div></div><label>Quando deseja executar?<select value={automationDraft.trigger} onChange={e=>setAutomationDraft(v=>({...v,trigger:e.target.value}))}><option value="manual">Ao clicar em um botão no registro</option><option value="after_save">Logo após salvar o registro</option></select></label><label>Qual campo contém o WhatsApp?<select value={automationDraft.phoneField} onChange={e=>setAutomationDraft(v=>({...v,phoneField:e.target.value}))}>{fields.filter(f=>f.enabled).map(f=><option key={f.id}>{f.name}</option>)}</select></label><label>Qual mensagem será enviada?<textarea value={automationDraft.message} onChange={e=>setAutomationDraft(v=>({...v,message:e.target.value}))}/><small>Use nomes entre chaves, como {'{Cliente}'} e {'{Valor}'}. Use {'{Resumo}'} para reunir todos os campos.</small></label><div className="automation-actions"><button onClick={()=>setAutomationDraft(null)}>Cancelar</button><button className="primary" onClick={saveAutomation}>Criar ação</button></div></div>}
+            {automationDraft?.kind==="reminder"&&<div className="automation-builder"><div className="automation-title"><Bell/><div><strong>Configurar lembrete</strong><small>Defina quando o aplicativo deverá avisar.</small></div></div><label>Campo usado como data<select value={automationDraft.dateField} onChange={e=>setAutomationDraft(v=>({...v,dateField:e.target.value}))}>{fields.filter(f=>f.enabled&&f.type==="date").map(f=><option key={f.id}>{f.name}</option>)}</select></label><label>Quantos dias antes?<input type="number" min="0" max="365" value={automationDraft.daysBefore} onChange={e=>setAutomationDraft(v=>({...v,daysBefore:Number(e.target.value)}))}/></label><label>Texto do lembrete<textarea value={automationDraft.message} onChange={e=>setAutomationDraft(v=>({...v,message:e.target.value}))}/></label><div className="automation-actions"><button onClick={()=>setAutomationDraft(null)}>Cancelar</button><button className="primary" onClick={saveAutomation}>Criar regra</button></div></div>}
+            {!!automations.length&&<div className="created-automations"><strong>Ações e regras criadas</strong>{automations.map(a=><span key={a.id}>{a.kind==="whatsapp"?<Send/>:<Bell/>}{a.name}<button onClick={()=>setAutomations(v=>v.filter(x=>x.id!==a.id))}><X/></button></span>)}</div>}
           </>
         )}
         {step === 3 && (
           <div className="success">
             <Sparkles />
             <h3>Seu módulo está pronto!</h3>
-            <p>“{name}” será salvo no Supabase.</p>
+            <p>“{name}” terá {fields.filter(f=>f.enabled).length} campos e {automations.length} ações/regras.</p>
           </div>
         )}
         <div className="form-navigation"><button onClick={()=>step>1?setStep(step-1):onCancel()}>{step>1?'Voltar':'Cancelar'}</button><button className="primary" disabled={step === 1 && !name.trim()} onClick={() => (step < 3 ? setStep(step + 1) : finish())}>{step < 3 ? "Continuar" : "Criar função"}<ChevronRight /></button></div>
@@ -1318,7 +1314,18 @@ function FunctionBuilder({ owner, notify, onCreated, onCancel }) {
   );
 }
 
-function CustomModulePage({owner,module,notify}){const[entries,setEntries]=useState([]),[open,setOpen]=useState(false);async function load(){if(!module)return;const{data}=await supabase.from("custom_module_entries").select("*").eq("owner_id",owner.id).eq("module_id",module.id).order("created_at",{ascending:false});setEntries(data||[])}useEffect(()=>{load()},[module?.id]);if(!module)return <EmptyState text="Função não encontrada."/>;const fields=Array.isArray(module.field_schema)?module.field_schema:[];async function add(e){e.preventDefault();const f=new FormData(e.currentTarget),data={};fields.forEach(field=>data[field.name]=f.get(field.name));const{error}=await supabase.from("custom_module_entries").insert({owner_id:owner.id,module_id:module.id,data});if(error)return notify("Não foi possível salvar o registro.");setOpen(false);load();notify("Registro salvo na função.")}return <div className="custom-module-page"><div className="page-head"><div><h2>{module.name}</h2><p>Tela criada automaticamente com os campos escolhidos.</p></div><button className="primary" onClick={()=>setOpen(true)}><Plus/>Novo registro</button></div>{open&&<form className="inline-form" onSubmit={add}>{fields.map(field=><label key={field.name}>{field.name}<input name={field.name} type={field.type||"text"} required/></label>)}<div className="form-actions"><button type="button" onClick={()=>setOpen(false)}>Cancelar</button><button className="primary">Salvar registro</button></div></form>}<div className="page-panel"><div className="panel-title"><h2>Registros</h2></div><div className="dynamic-table">{entries.map(entry=><div className="dynamic-row" key={entry.id}>{fields.map(field=><span key={field.name}><small>{field.name}</small><strong>{entry.data?.[field.name]||"—"}</strong></span>)}</div>)}{!entries.length&&<EmptyState text="Nenhum registro nesta função."/>}</div></div></div>}
+function CustomModulePage({owner,module,notify}){
+  const[entries,setEntries]=useState([]),[open,setOpen]=useState(false);
+  async function load(){if(!module)return;const{data}=await supabase.from("custom_module_entries").select("*").eq("owner_id",owner.id).eq("module_id",module.id).order("created_at",{ascending:false});setEntries(data||[])}
+  useEffect(()=>{load()},[module?.id]);
+  if(!module)return <EmptyState text="Função não encontrada."/>;
+  const fields=(Array.isArray(module.field_schema)?module.field_schema:[]).filter(f=>f.enabled!==false),automations=Array.isArray(module.automation_schema)?module.automation_schema:[];
+  function whatsappUrl(data,rule){const summary=fields.map(f=>`${f.name}: ${data[f.name]||"—"}`).join("\n"),message=String(rule.message||"").replace(/\{Resumo\}/gi,summary).replace(/\{([^}]+)\}/g,(_,key)=>data[key]||`{${key}}`),phone=String(data[rule.phoneField]||"").replace(/\D/g,"");return `https://wa.me/${phone}?text=${encodeURIComponent(message)}`}
+  function runWhatsApp(data,rule){const phone=String(data[rule.phoneField]||"").replace(/\D/g,"");if(!phone)return notify(`Preencha o campo ${rule.phoneField} para enviar.`);window.open(whatsappUrl(data,rule),"_blank")}
+  function reminderFor(entry){const rule=automations.find(a=>a.kind==="reminder");if(!rule||!entry.data?.[rule.dateField])return null;const days=Math.ceil((new Date(entry.data[rule.dateField]+"T12:00")-new Date())/86400000);return days<=Number(rule.daysBefore)&&days>=0?`${days===0?"Vence hoje":`Vence em ${days} dia(s)`}`:days<0?`Vencido há ${Math.abs(days)} dia(s)`:null}
+  async function add(e){e.preventDefault();const f=new FormData(e.currentTarget),data={};fields.forEach(field=>data[field.name]=f.get(field.name));const{error}=await supabase.from("custom_module_entries").insert({owner_id:owner.id,module_id:module.id,data});if(error)return notify("Não foi possível salvar o registro.");setOpen(false);load();notify("Registro salvo na função.");const automatic=automations.find(a=>a.kind==="whatsapp"&&a.trigger==="after_save");if(automatic)runWhatsApp(data,automatic)}
+  return <div className="custom-module-page"><div className="page-head"><div><h2>{module.name}</h2><p>Tela criada automaticamente com campos, ações e regras personalizadas.</p></div><button className="primary" onClick={()=>setOpen(true)}><Plus/>Novo registro</button></div>{open&&<form className="inline-form" onSubmit={add}>{fields.map(field=><label key={field.name}>{field.name}{field.type==="textarea"?<textarea name={field.name} required={field.required}/>:<input name={field.name} type={field.type||"text"} required={field.required}/>}</label>)}<div className="form-actions"><button type="button" onClick={()=>setOpen(false)}>Cancelar</button><button className="primary">Salvar registro</button></div></form>}<div className="page-panel"><div className="panel-title"><h2>Registros</h2></div><div className="dynamic-table">{entries.map(entry=><div className="dynamic-row custom-entry" key={entry.id}>{fields.map(field=><span key={field.name}><small>{field.name}</small><strong>{entry.data?.[field.name]||"—"}</strong></span>)}{reminderFor(entry)&&<i className="entry-reminder"><Bell/>{reminderFor(entry)}</i>}<div className="entry-actions">{automations.filter(a=>a.kind==="whatsapp"&&a.trigger==="manual").map(rule=><button key={rule.id} onClick={()=>runWhatsApp(entry.data,rule)}><Send/>{rule.name}</button>)}</div></div>)}{!entries.length&&<EmptyState text="Nenhum registro nesta função."/>}</div></div></div>
+}
 
 const normalizeName = (n) =>
   n.trim().replace(/\s+/g, " ").toLocaleUpperCase("pt-BR");
