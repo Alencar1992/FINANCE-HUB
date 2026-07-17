@@ -26,6 +26,8 @@ import {
   Check,
   ChevronRight,
   Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
   X,
   MoreHorizontal,
   Sun,
@@ -57,6 +59,11 @@ const authErrorPt = (error, fallback = "Não foi possível concluir. Tente novam
 
 const money = (n) =>
   n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+const parseBRNumber = (value) => {
+  const raw = String(value ?? "").trim().replace(/\s/g, "");
+  if (!raw) return Number.NaN;
+  return Number(raw.includes(",") ? raw.replace(/\./g, "").replace(",", ".") : raw);
+};
 const nav = [
   ["Início", Home],
   ["Movimentações", ArrowLeftRight],
@@ -171,6 +178,7 @@ const owed = [
 function FinanceApp({ owner }) {
   const [page, setPage] = useState("Início"),
     [menu, setMenu] = useState(false),
+    [sidebarCollapsed, setSidebarCollapsed] = useState(()=>localStorage.getItem("finance-sidebar-collapsed")==="true"),
     [dark, setDark] = useState(false),
     [modal, setModal] = useState(null),
     [toast, setToast] = useState(""),
@@ -221,8 +229,7 @@ function FinanceApp({ owner }) {
       ),
     [tx, query],
   );
-  useEffect(() => {
-    (async () => {
+  async function loadTransactions() {
       const { data, error } = await supabase
         .from("transactions")
         .select("*")
@@ -248,15 +255,15 @@ function FinanceApp({ owner }) {
             };
           }),
         );
-    })();
-  }, [owner.id]);
+  }
+  useEffect(() => {loadTransactions();const refresh=()=>loadTransactions();addEventListener("finance-data-changed",refresh);return()=>removeEventListener("finance-data-changed",refresh)}, [owner.id]);
   async function loadCustomModules(){const{data}=await supabase.from("custom_modules").select("*").eq("owner_id",owner.id).eq("active",true).order("created_at");setCustomModules(data||[])}
   useEffect(()=>{loadCustomModules()},[owner.id]);
   const visibleNav=[...nav.slice(0,7),...customModules.map(m=>[`module:${m.id}`,Sparkles,m.name]),...nav.slice(7)];
   async function addTx(e) {
     e.preventDefault();
     const f = new FormData(e.currentTarget),
-      total = Number(f.get("total")),
+      total = parseBRNumber(f.get("total")),
       count = Number(f.get("installments") || 1),
       monthly = Math.round((total / count) * 100) / 100;
     const row = {
@@ -301,7 +308,7 @@ function FinanceApp({ owner }) {
     );
   }
   return (
-    <div className={dark ? "app dark" : "app"} style={{"--violet":profile.app_color||"#6445ED","--user-bg":profile.background_color||"#F6F8FC"}}>
+    <div className={`${dark ? "app dark" : "app"}${sidebarCollapsed ? " sidebar-collapsed" : ""}`} style={{"--violet":profile.app_color||"#6445ED","--user-bg":profile.background_color||"#F6F8FC"}}>
       <aside className={menu ? "sidebar open" : "sidebar"}>
         <div className="brand">
           <span>
@@ -311,6 +318,9 @@ function FinanceApp({ owner }) {
         </div>
         <button className="close" onClick={() => setMenu(false)}>
           <X />
+        </button>
+        <button className="sidebar-toggle" title={sidebarCollapsed?"Mostrar menu lateral":"Ocultar menu lateral"} aria-label={sidebarCollapsed?"Mostrar menu lateral":"Ocultar menu lateral"} onClick={()=>setSidebarCollapsed(value=>{localStorage.setItem("finance-sidebar-collapsed",String(!value));return !value})}>
+          {sidebarCollapsed?<PanelLeftOpen/>:<PanelLeftClose/>}<span>{sidebarCollapsed?"Mostrar menu":"Ocultar menu"}</span>
         </button>
         <nav>
           {visibleNav.map(([n, I, label]) => (
@@ -502,9 +512,9 @@ function TransactionModal({ addTx, close }) {
               value={total}
               onChange={(e) => setTotal(e.target.value)}
               required
-              type="number"
-              min="0.01"
-              step=".01"
+              type="text"
+              inputMode="decimal"
+              pattern="[0-9.]+([,][0-9]{1,2})?|[0-9]+([.][0-9]{1,2})?"
               placeholder="R$ 0,00"
             />
           </label>
@@ -1213,20 +1223,27 @@ function FunctionBuilder({ owner, notify, onCreated, onCancel }) {
     ]),
     [customField,setCustomField]=useState(""),
     [automationDraft,setAutomationDraft]=useState(null),
-    [automations,setAutomations]=useState([]);
+    [automations,setAutomations]=useState([]),
+    [financial,setFinancial]=useState({enabled:true,direction:"income",valueFieldId:"valor",dateFieldId:"data",descriptionFieldId:"cliente",alertEnabled:true,daysBefore:3});
   const inferType=(value)=>/telefone|whatsapp|celular/i.test(value)?"tel":/e-mail|email/i.test(value)?"email":/valor|preço|quantidade|km|quilometragem/i.test(value)?"number":/data|vencimento/i.test(value)?"date":"text";
   const addField=(fieldName,type=inferType(fieldName))=>{const clean=fieldName.trim();if(!clean||fields.some(f=>f.name.toLocaleLowerCase("pt-BR")===clean.toLocaleLowerCase("pt-BR")))return;setFields(v=>[...v,{id:`campo_${Date.now()}`,name:clean,type,required:false,enabled:true}])};
   function interpretRequest(){const value=customField.trim();if(!value)return;if(/whats|mensagem|cobrar/i.test(value)){let phone=fields.find(f=>f.type==="tel"||/telefone|whats|celular/i.test(f.name));if(!phone){phone={id:`campo_${Date.now()}`,name:"Telefone/WhatsApp",type:"tel",required:true,enabled:true};setFields(v=>[...v,phone])}setAutomationDraft({kind:"whatsapp",name:"Enviar WhatsApp",trigger:/ap[oó]s|salvar|cadastrar/i.test(value)?"after_save":"manual",phoneField:phone.name,message:"Olá {Cliente}, seguem as informações do seu registro: {Resumo}."});setCustomField("");return}if(/alerta|lembrete|avisar|vencimento/i.test(value)){let date=fields.find(f=>f.type==="date");if(!date){date={id:`campo_${Date.now()}`,name:"Data de vencimento",type:"date",required:true,enabled:true};setFields(v=>[...v,date])}setAutomationDraft({kind:"reminder",name:"Lembrete de vencimento",dateField:date.name,daysBefore:3,message:"Você possui um compromisso próximo do vencimento."});setCustomField("");return}addField(value);setCustomField("")}
   function saveAutomation(){if(!automationDraft)return;setAutomations(v=>[...v,{...automationDraft,id:`regra_${Date.now()}`}]);setAutomationDraft(null)}
   const updateField=(id,changes)=>setFields(v=>v.map(f=>f.id===id?{...f,...changes}:f));
   async function finish() {
+    const activeFields=fields.filter(x=>x.enabled),fieldName=id=>activeFields.find(f=>f.id===id)?.name||"";
+    if(financial.enabled&&!fieldName(financial.valueFieldId))return notify("Selecione um campo numérico para o valor financeiro.");
+    if(financial.enabled&&financial.alertEnabled&&!fieldName(financial.dateFieldId))return notify("Selecione um campo de data para o alerta de vencimento.");
+    const schemaFields=activeFields.map(({name,type,required,options})=>({name,type,required,...(options?{options}:{})}));
+    if(financial.enabled&&financial.direction==="both"&&!schemaFields.some(f=>f.name==="Tipo financeiro"))schemaFields.push({name:"Tipo financeiro",type:"select",required:true,options:["Recebimento","Pagamento"]});
     const { data, error } = await supabase
       .from("custom_modules")
       .insert({
         owner_id: owner.id,
         name: name || "Nova função",
-        field_schema: fields.filter(x=>x.enabled).map(({name,type,required})=>({name,type,required})),
+        field_schema: schemaFields,
         automation_schema: automations,
+        financial_schema: financial.enabled?{enabled:true,direction:financial.direction,valueField:fieldName(financial.valueFieldId),dateField:fieldName(financial.dateFieldId),descriptionField:fieldName(financial.descriptionFieldId),directionField:financial.direction==="both"?"Tipo financeiro":null,alertEnabled:financial.alertEnabled,daysBefore:Number(financial.daysBefore||0)}:{enabled:false},
       }).select().single();
     if (error)
       return notify(
@@ -1302,13 +1319,14 @@ function FunctionBuilder({ owner, notify, onCreated, onCancel }) {
             {automationDraft?.kind==="whatsapp"&&<div className="automation-builder"><div className="automation-title"><Send/><div><strong>Configurar envio pelo WhatsApp</strong><small>Responda às perguntas para criar a ação corretamente.</small></div></div><label>Quando deseja executar?<select value={automationDraft.trigger} onChange={e=>setAutomationDraft(v=>({...v,trigger:e.target.value}))}><option value="manual">Ao clicar em um botão no registro</option><option value="after_save">Logo após salvar o registro</option></select></label><label>Qual campo contém o WhatsApp?<select value={automationDraft.phoneField} onChange={e=>setAutomationDraft(v=>({...v,phoneField:e.target.value}))}>{fields.filter(f=>f.enabled).map(f=><option key={f.id}>{f.name}</option>)}</select></label><label>Qual mensagem será enviada?<textarea value={automationDraft.message} onChange={e=>setAutomationDraft(v=>({...v,message:e.target.value}))}/><small>Use nomes entre chaves, como {'{Cliente}'} e {'{Valor}'}. Use {'{Resumo}'} para reunir todos os campos.</small></label><div className="automation-actions"><button onClick={()=>setAutomationDraft(null)}>Cancelar</button><button className="primary" onClick={saveAutomation}>Criar ação</button></div></div>}
             {automationDraft?.kind==="reminder"&&<div className="automation-builder"><div className="automation-title"><Bell/><div><strong>Configurar lembrete</strong><small>Defina quando o aplicativo deverá avisar.</small></div></div><label>Campo usado como data<select value={automationDraft.dateField} onChange={e=>setAutomationDraft(v=>({...v,dateField:e.target.value}))}>{fields.filter(f=>f.enabled&&f.type==="date").map(f=><option key={f.id}>{f.name}</option>)}</select></label><label>Quantos dias antes?<input type="number" min="0" max="365" value={automationDraft.daysBefore} onChange={e=>setAutomationDraft(v=>({...v,daysBefore:Number(e.target.value)}))}/></label><label>Texto do lembrete<textarea value={automationDraft.message} onChange={e=>setAutomationDraft(v=>({...v,message:e.target.value}))}/></label><div className="automation-actions"><button onClick={()=>setAutomationDraft(null)}>Cancelar</button><button className="primary" onClick={saveAutomation}>Criar regra</button></div></div>}
             {!!automations.length&&<div className="created-automations"><strong>Ações e regras criadas</strong>{automations.map(a=><span key={a.id}>{a.kind==="whatsapp"?<Send/>:<Bell/>}{a.name}<button onClick={()=>setAutomations(v=>v.filter(x=>x.id!==a.id))}><X/></button></span>)}</div>}
+            <div className="financial-builder"><div className="automation-title"><Landmark/><div><strong>Integração financeira</strong><small>Defina como os registros deste botão entrarão no Finance Hub.</small></div></div><label className="financial-enabled"><input type="checkbox" checked={financial.enabled} onChange={e=>setFinancial(v=>({...v,enabled:e.target.checked}))}/><span><Check/></span>Este módulo registra movimentações financeiras</label>{financial.enabled&&<div className="financial-questions"><label>Qual tipo de movimentação?<select value={financial.direction} onChange={e=>setFinancial(v=>({...v,direction:e.target.value}))}><option value="income">Recebimento</option><option value="expense">Pagamento</option><option value="both">Perguntar em cada novo registro</option></select></label><label>Qual campo contém o valor?<select value={financial.valueFieldId} onChange={e=>setFinancial(v=>({...v,valueFieldId:e.target.value}))}>{fields.filter(f=>f.enabled&&f.type==="number").map(f=><option value={f.id} key={f.id}>{f.name}</option>)}</select></label><label>Qual campo contém a data ou vencimento?<select value={financial.dateFieldId} onChange={e=>setFinancial(v=>({...v,dateFieldId:e.target.value}))}>{fields.filter(f=>f.enabled&&f.type==="date").map(f=><option value={f.id} key={f.id}>{f.name}</option>)}</select></label><label>Qual campo identifica o registro?<select value={financial.descriptionFieldId} onChange={e=>setFinancial(v=>({...v,descriptionFieldId:e.target.value}))}>{fields.filter(f=>f.enabled).map(f=><option value={f.id} key={f.id}>{f.name}</option>)}</select></label><label className="financial-enabled"><input type="checkbox" checked={financial.alertEnabled} onChange={e=>setFinancial(v=>({...v,alertEnabled:e.target.checked}))}/><span><Check/></span>Criar alerta de vencimento</label>{financial.alertEnabled&&<label>Alertar quantos dias antes?<input type="number" min="0" max="365" value={financial.daysBefore} onChange={e=>setFinancial(v=>({...v,daysBefore:Number(e.target.value)}))}/></label>}</div>}</div>
           </>
         )}
         {step === 3 && (
           <div className="success">
             <Sparkles />
             <h3>Seu módulo está pronto!</h3>
-            <p>“{name}” terá {fields.filter(f=>f.enabled).length} campos e {automations.length} ações/regras.</p>
+            <p>“{name}” terá {fields.filter(f=>f.enabled).length} campos, {automations.length} ações/regras e {financial.enabled?"integração financeira":"nenhuma movimentação financeira"}.</p>
           </div>
         )}
         <div className="form-navigation"><button onClick={()=>step>1?setStep(step-1):onCancel()}>{step>1?'Voltar':'Cancelar'}</button><button className="primary" disabled={step === 1 && !name.trim()} onClick={() => (step < 3 ? setStep(step + 1) : finish())}>{step < 3 ? "Continuar" : "Criar função"}<ChevronRight /></button></div>
@@ -1322,12 +1340,36 @@ function CustomModulePage({owner,module,notify}){
   async function load(){if(!module)return;const{data}=await supabase.from("custom_module_entries").select("*").eq("owner_id",owner.id).eq("module_id",module.id).order("created_at",{ascending:false});setEntries(data||[])}
   useEffect(()=>{load()},[module?.id]);
   if(!module)return <EmptyState text="Função não encontrada."/>;
-  const fields=(Array.isArray(module.field_schema)?module.field_schema:[]).filter(f=>f.enabled!==false),automations=Array.isArray(module.automation_schema)?module.automation_schema:[];
+  const fields=(Array.isArray(module.field_schema)?module.field_schema:[]).filter(f=>f.enabled!==false),automations=Array.isArray(module.automation_schema)?module.automation_schema:[],financial=module.financial_schema||{enabled:false};
   function whatsappUrl(data,rule){const summary=fields.map(f=>`${f.name}: ${data[f.name]||"—"}`).join("\n"),message=String(rule.message||"").replace(/\{Resumo\}/gi,summary).replace(/\{([^}]+)\}/g,(_,key)=>data[key]||`{${key}}`),phone=String(data[rule.phoneField]||"").replace(/\D/g,"");return `https://wa.me/${phone}?text=${encodeURIComponent(message)}`}
   function runWhatsApp(data,rule){const phone=String(data[rule.phoneField]||"").replace(/\D/g,"");if(!phone)return notify(`Preencha o campo ${rule.phoneField} para enviar.`);window.open(whatsappUrl(data,rule),"_blank")}
-  function reminderFor(entry){const rule=automations.find(a=>a.kind==="reminder");if(!rule||!entry.data?.[rule.dateField])return null;const days=Math.ceil((new Date(entry.data[rule.dateField]+"T12:00")-new Date())/86400000);return days<=Number(rule.daysBefore)&&days>=0?`${days===0?"Vence hoje":`Vence em ${days} dia(s)`}`:days<0?`Vencido há ${Math.abs(days)} dia(s)`:null}
-  async function add(e){e.preventDefault();const f=new FormData(e.currentTarget),data={};fields.forEach(field=>data[field.name]=f.get(field.name));const{error}=await supabase.from("custom_module_entries").insert({owner_id:owner.id,module_id:module.id,data});if(error)return notify("Não foi possível salvar o registro.");setOpen(false);load();notify("Registro salvo na função.");const automatic=automations.find(a=>a.kind==="whatsapp"&&a.trigger==="after_save");if(automatic)runWhatsApp(data,automatic)}
-  return <div className="custom-module-page"><div className="page-head"><div><h2>{module.name}</h2><p>Tela criada automaticamente com campos, ações e regras personalizadas.</p></div><button className="primary" onClick={()=>setOpen(true)}><Plus/>Novo registro</button></div>{open&&<form className="inline-form" onSubmit={add}>{fields.map(field=><label key={field.name}>{field.name}{field.type==="textarea"?<textarea name={field.name} required={field.required}/>:<input name={field.name} type={field.type||"text"} required={field.required}/>}</label>)}<div className="form-actions"><button type="button" onClick={()=>setOpen(false)}>Cancelar</button><button className="primary">Salvar registro</button></div></form>}<div className="page-panel"><div className="panel-title"><h2>Registros</h2></div><div className="dynamic-table">{entries.map(entry=><div className="dynamic-row custom-entry" key={entry.id}>{fields.map(field=><span key={field.name}><small>{field.name}</small><strong>{entry.data?.[field.name]||"—"}</strong></span>)}{reminderFor(entry)&&<i className="entry-reminder"><Bell/>{reminderFor(entry)}</i>}<div className="entry-actions">{automations.filter(a=>a.kind==="whatsapp"&&a.trigger==="manual").map(rule=><button key={rule.id} onClick={()=>runWhatsApp(entry.data,rule)}><Send/>{rule.name}</button>)}</div></div>)}{!entries.length&&<EmptyState text="Nenhum registro nesta função."/>}</div></div></div>
+  function reminderFor(entry){const rule=financial.enabled&&financial.alertEnabled?{dateField:financial.dateField,daysBefore:financial.daysBefore}:automations.find(a=>a.kind==="reminder");if(!rule||!entry.data?.[rule.dateField]||entry.data?._finance?.status==="paid")return null;const days=Math.ceil((new Date(entry.data[rule.dateField]+"T12:00")-new Date())/86400000);return days<=Number(rule.daysBefore)&&days>=0?`${days===0?"Vence hoje":`Vence em ${days} dia(s)`}`:days<0?`Vencido há ${Math.abs(days)} dia(s)`:null}
+  async function add(e){
+    e.preventDefault();
+    const form=new FormData(e.currentTarget),data={};fields.forEach(field=>data[field.name]=form.get(field.name));
+    let transactionId=null,obligationId=null;
+    if(financial.enabled){
+      const amount=parseBRNumber(data[financial.valueField]);
+      if(!Number.isFinite(amount)||amount<=0)return notify("Informe um valor válido, por exemplo 55,90.");
+      const direction=financial.direction==="both"?(data[financial.directionField]==="Pagamento"?"expense":"income"):financial.direction;
+      const date=data[financial.dateField]||new Date().toISOString().slice(0,10),description=data[financial.descriptionField]||module.name;
+      const{data:transaction,error:transactionError}=await supabase.from("transactions").insert({owner_id:owner.id,name:`${module.name}: ${description}`,category:module.name,amount,total_amount:amount,installment_amount:amount,transaction_type:direction,transaction_date:date,status:"pending",is_installment:false,installment_count:1,installment_number:1,notes:`Criado pela função ${module.name}`}).select("id").single();
+      if(transactionError)return notify("Não foi possível criar a movimentação financeira.");
+      transactionId=transaction.id;
+      if(financial.alertEnabled){
+        const{data:obligation,error:obligationError}=await supabase.from("obligations").insert({owner_id:owner.id,direction:direction==="income"?"receivable":"payable",counterparty_name:String(description),description:`${module.name}: ${description}`,category:module.name,total_amount:amount,remaining_amount:amount,installment_amount:amount,installments:1,next_due_date:date,status:"open",notes:`Criado pela função ${module.name}`}).select("id").single();
+        if(obligationError){await supabase.from("transactions").delete().eq("id",transactionId).eq("owner_id",owner.id);return notify("Não foi possível criar o alerta de vencimento.")}
+        obligationId=obligation.id;
+      }
+      data._finance={direction,amount,status:"pending",transactionId,obligationId,dueDate:date,daysBefore:Number(financial.daysBefore||0)};
+    }
+    const{error}=await supabase.from("custom_module_entries").insert({owner_id:owner.id,module_id:module.id,data});
+    if(error){if(obligationId)await supabase.from("obligations").delete().eq("id",obligationId).eq("owner_id",owner.id);if(transactionId)await supabase.from("transactions").delete().eq("id",transactionId).eq("owner_id",owner.id);return notify("Não foi possível salvar o registro.")}
+    setOpen(false);await load();window.dispatchEvent(new Event("finance-data-changed"));notify(financial.enabled?"Registro financeiro sincronizado com o saldo.":"Registro salvo na função.");const automatic=automations.find(a=>a.kind==="whatsapp"&&a.trigger==="after_save");if(automatic)runWhatsApp(data,automatic)
+  }
+  async function settle(entry){const finance=entry.data?._finance;if(!finance||finance.status==="paid")return;const status=finance.direction==="income"?"received":"paid";const results=await Promise.all([supabase.from("transactions").update({status}).eq("id",finance.transactionId).eq("owner_id",owner.id),finance.obligationId?supabase.from("obligations").update({status:"paid",remaining_amount:0,paid_installments:1}).eq("id",finance.obligationId).eq("owner_id",owner.id):Promise.resolve({error:null}),supabase.from("custom_module_entries").update({data:{...entry.data,_finance:{...finance,status:"paid"}}}).eq("id",entry.id).eq("owner_id",owner.id)]);if(results.some(result=>result.error))return notify("Não foi possível concluir esta baixa.");await load();window.dispatchEvent(new Event("finance-data-changed"));notify(finance.direction==="income"?"Recebimento confirmado.":"Pagamento confirmado.")}
+  const inputFor=field=>field.type==="textarea"?<textarea name={field.name} required={field.required}/>:field.type==="select"?<select name={field.name} required={field.required}><option value="">Selecione</option>{(field.options||[]).map(option=><option key={option}>{option}</option>)}</select>:field.type==="number"?<input name={field.name} type="text" inputMode="decimal" placeholder="0,00" pattern="[0-9.]+([,][0-9]{1,2})?|[0-9]+([.][0-9]{1,2})?" required={field.required}/>:<input name={field.name} type={field.type||"text"} required={field.required}/>;
+  return <div className="custom-module-page"><div className="page-head"><div><h2>{module.name}</h2><p>Tela criada automaticamente com campos, ações e regras personalizadas.</p></div><button className="primary" onClick={()=>setOpen(true)}><Plus/>Novo registro</button></div>{open&&<form className="inline-form" onSubmit={add}>{fields.map(field=><label key={field.name}>{field.name}{inputFor(field)}</label>)}<div className="form-actions"><button type="button" onClick={()=>setOpen(false)}>Cancelar</button><button className="primary">Salvar registro</button></div></form>}<div className="page-panel"><div className="panel-title"><h2>Registros</h2></div><div className="dynamic-table">{entries.map(entry=><div className="dynamic-row custom-entry" key={entry.id}>{fields.map(field=><span key={field.name}><small>{field.name}</small><strong>{field.name===financial.valueField&&Number.isFinite(parseBRNumber(entry.data?.[field.name]))?money(parseBRNumber(entry.data?.[field.name])):entry.data?.[field.name]||"—"}</strong></span>)}{reminderFor(entry)&&<i className="entry-reminder"><Bell/>{reminderFor(entry)}</i>}<div className="entry-actions">{entry.data?._finance&&<button className="finance-action" disabled={entry.data._finance.status==="paid"} onClick={()=>settle(entry)}><Check/>{entry.data._finance.status==="paid"?(entry.data._finance.direction==="income"?"Recebido":"Pago"):(entry.data._finance.direction==="income"?"Receber":"Pagar")}</button>}{automations.filter(a=>a.kind==="whatsapp"&&a.trigger==="manual").map(rule=><button key={rule.id} onClick={()=>runWhatsApp(entry.data,rule)}><Send/>{rule.name}</button>)}</div></div>)}{!entries.length&&<EmptyState text="Nenhum registro nesta função."/>}</div></div></div>
 }
 
 const normalizeName = (n) =>
