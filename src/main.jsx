@@ -41,6 +41,7 @@ import {
   PackageOpen,
   PiggyBank,
   Percent,
+  RefreshCw,
   Banknote,
   BrainCircuit,
   Tags,
