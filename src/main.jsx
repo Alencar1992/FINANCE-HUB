@@ -43,6 +43,13 @@ import {
   Percent,
   RefreshCw,
   Banknote,
+  BrainCircuit,
+  Tags,
+  CopyCheck,
+  Calculator,
+  Lightbulb,
+  MessageCircle,
+  CircleDollarSign,
 } from "lucide-react";
 import "./styles.css";
 import { supabase } from "./lib/supabase";
@@ -75,6 +82,19 @@ const parseBRNumber = (value) => {
 };
 const monthStart=(date=new Date())=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-01`;
 const dueDateFor=(day,date=new Date())=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(Math.min(Number(day),new Date(date.getFullYear(),date.getMonth()+1,0).getDate())).padStart(2,"0")}`;
+const categoryRules=[
+  ["Alimentação",/mercado|supermercado|padaria|restaurante|lanche|ifood|comida|açougue/i],
+  ["Moradia",/aluguel|condom[ií]nio|energia|luz|[aá]gua|g[aá]s|iptu/i],
+  ["Transporte",/combust[ií]vel|gasolina|uber|99|ônibus|onibus|oficina|moto|carro|ped[aá]gio/i],
+  ["Saúde",/farm[aá]cia|m[eé]dico|dentista|hospital|consulta|exame|academia/i],
+  ["Assinaturas",/netflix|spotify|disney|prime|streaming|assinatura|gamepass/i],
+  ["Educação",/curso|faculdade|escola|livro|mensalidade/i],
+  ["Investimentos",/investimento|aporte|poupan[cç]a|cdb|lci|lca|tesouro/i],
+  ["Salário",/sal[aá]rio|adiantamento|pagamento mensal/i],
+  ["Renda extra",/venda|freelancer|comiss[aã]o|renda extra|servi[cç]o/i],
+];
+function suggestCategory(name,type){const found=categoryRules.find(([,rule])=>rule.test(String(name)));return found?{category:found[0],confidence:.9,source:"rules"}:{category:type==="income"?"Outras receitas":"Outras despesas",confidence:.45,source:"rules"}}
+const normalizeText=value=>String(value||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]/g,"");
 async function addSavingsContribution(ownerId,amount,label){
   if(amount<=0)return null;
   let{data:investment}=await supabase.from("investments").select("*").eq("owner_id",ownerId).ilike("name","Reserva de Poupança").eq("active",true).maybeSingle();
@@ -98,6 +118,7 @@ const nav = [
   ["Eu devo", ArrowDownLeft],
   ["Calendário", CalendarDays],
   ["Relatórios", ChartNoAxesCombined],
+  ["Inteligência", BrainCircuit],
   ["Investimentos", PiggyBank],
   ["Configurações", Settings],
 ];
@@ -285,6 +306,12 @@ function FinanceApp({ owner }) {
               type: x.transaction_type === "income" ? "in" : "out",
               status: currentInstallment>=x.installment_count&&x.is_installment?"Última parcela":({pending:"Pendente",paid:"Pago",received:"Recebido",overdue:"Vencido",cancelled:"Cancelado"}[x.status]),
               rawStatus:x.status,
+              rawDate:x.transaction_date,
+              totalValue:Number(x.total_amount||x.amount),
+              classificationSource:x.classification_source,
+              classificationConfidence:Number(x.classification_confidence||0),
+              duplicateStatus:x.duplicate_review_status,
+              duplicateOf:x.duplicate_of,
               source:"transaction",
               recurring:Boolean(x.is_recurring&&x.recurrence_active),
             };
@@ -313,19 +340,32 @@ function FinanceApp({ owner }) {
       total = parseBRNumber(f.get("total")),
       count = Number(f.get("installments") || 1),
       monthly = Math.round((total / count) * 100) / 100;
+    const type=f.get("type") === "in" ? "income" : "expense",
+      typedCategory=String(f.get("cat")||"").trim(),
+      suggestion=suggestCategory(f.get("name"),type),
+      category=typedCategory||suggestion.category,
+      startDate=f.get("date")||new Date().toISOString().slice(0,10),
+      dayBefore=new Date(startDate+"T12:00"),dayAfter=new Date(startDate+"T12:00");
+    dayBefore.setDate(dayBefore.getDate()-2);dayAfter.setDate(dayAfter.getDate()+2);
+    const{data:possibleDuplicates}=await supabase.from("transactions").select("id,name,amount,transaction_date").eq("owner_id",owner.id).eq("transaction_type",type).eq("amount",monthly).gte("transaction_date",dayBefore.toISOString().slice(0,10)).lte("transaction_date",dayAfter.toISOString().slice(0,10)).neq("status","cancelled").limit(10);
+    const duplicate=(possibleDuplicates||[]).find(item=>normalizeText(item.name)===normalizeText(f.get("name")))||possibleDuplicates?.[0];
     const row = {
       owner_id: owner.id,
       name: f.get("name"),
-      category: f.get("cat"),
+      category,
+      classification_source:typedCategory?"manual":suggestion.source,
+      classification_confidence:typedCategory?1:suggestion.confidence,
+      duplicate_of:duplicate?.id||null,
+      duplicate_review_status:duplicate?"pending":"not_flagged",
       amount: monthly,
       total_amount: total,
       is_installment: count > 1,
       installment_count: count,
       installment_number: 1,
       installment_amount: monthly,
-      transaction_type: f.get("type") === "in" ? "income" : "expense",
+      transaction_type: type,
       status: "pending",
-      transaction_date:f.get("date")||new Date().toISOString().slice(0,10),
+      transaction_date:startDate,
       is_recurring:f.get("recurring")==="on",
       recurrence_active:f.get("recurring")==="on",
       recurrence_day:f.get("recurring")==="on"?Number(f.get("recurrence_day")||new Date().getDate()):null,
@@ -353,7 +393,9 @@ function FinanceApp({ owner }) {
     ]);
     setModal(null);
     notify(
-      count > 1
+      duplicate
+        ? `Movimentação salva, mas encontramos um possível lançamento duplicado de ${money(monthly)}.`
+        : count > 1
         ? `Parcela 1/${count} salva: ${money(monthly)}`
         : "Movimentação salva no Supabase",
     );
@@ -467,6 +509,8 @@ function FinanceApp({ owner }) {
             <CalendarModule owner={owner} tx={tx} />
           ) : page === "Relatórios" ? (
             <ReportsModule tx={tx} />
+          ) : page === "Inteligência" ? (
+            <FinancialIntelligence owner={owner} tx={tx} notify={notify} refresh={loadTransactions} ask={ask}/>
           ) : page === "Streamings" ? (
             <StreamingsModule owner={owner} notify={notify}/>
           ) : page === "Investimentos" ? (
@@ -531,7 +575,7 @@ function TransactionModal({ addTx, close }) {
     [recurring,setRecurring]=useState(false),
     [total, setTotal] = useState(""),
     [count, setCount] = useState(2);
-  const monthly = Number(total || 0) / Number(count || 1);
+  const monthly = (parseBRNumber(total) || 0) / Number(count || 1);
   return (
     <Modal title="Nova movimentação" close={close}>
       <form onSubmit={addTx} className="form">
@@ -556,7 +600,7 @@ function TransactionModal({ addTx, close }) {
         <div className="fields">
           <label>
             Categoria
-            <input name="cat" required placeholder="Selecione ou digite" />
+            <input name="cat" placeholder="Automática ou digite" />
           </label>
           <label>
             Valor total
@@ -2066,6 +2110,25 @@ function ReportsModule({ tx }) {
       <Transactions rows={tx} open={null} />
     </div>
   );
+}
+function FinancialIntelligence({owner,tx,notify,refresh,ask}){
+  const[tab,setTab]=useState("visao"),[goals,setGoals]=useState([]),[goalOpen,setGoalOpen]=useState(false),[simulation,setSimulation]=useState(null);
+  async function load(){const{data}=await supabase.from("financial_goals").select("*").eq("owner_id",owner.id).neq("status","cancelled").order("target_date");setGoals(data||[])}
+  useEffect(()=>{load()},[owner.id]);
+  const flagged=tx.filter(item=>item.duplicateStatus==="pending"),classified=tx.filter(item=>item.classificationSource==="rules"||item.classificationSource==="gemini"),now=new Date(),thisKey=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`,previous=new Date(now.getFullYear(),now.getMonth()-1,1),previousKey=`${previous.getFullYear()}-${String(previous.getMonth()+1).padStart(2,"0")}`;
+  const monthTotals=key=>tx.filter(item=>String(item.rawDate||"").startsWith(key)).reduce((acc,item)=>{acc[item.type]+=Number(item.value);return acc},{in:0,out:0}),current=monthTotals(thisKey),prior=monthTotals(previousKey),difference=current.in-current.out-(prior.in-prior.out);
+  async function reviewDuplicate(item,status){const{error}=await supabase.from("transactions").update({duplicate_review_status:status}).eq("id",item.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível registrar a revisão.");await refresh();notify(status==="dismissed"?"Alerta descartado.":"Duplicidade confirmada; o lançamento foi mantido para sua decisão.")}
+  async function saveGoal(e){e.preventDefault();const f=new FormData(e.currentTarget),target=parseBRNumber(f.get("target")),currentAmount=parseBRNumber(f.get("current"))||0;if(!Number.isFinite(target)||target<=0)return notify("Informe um valor de meta válido.");const{error}=await supabase.from("financial_goals").insert({owner_id:owner.id,name:f.get("name"),target_amount:target,current_amount:currentAmount,target_date:f.get("date"),priority:f.get("priority"),notes:f.get("notes")||null});if(error)return notify("Não foi possível salvar a meta.");setGoalOpen(false);await load();notify("Meta financeira criada.")}
+  async function contribute(goal){const value=await ask({kind:"input",title:"Adicionar progresso à meta",message:`Informe quanto foi reservado para “${goal.name}”.`,value:"",confirmLabel:"Adicionar à meta"});if(value==null)return;const amount=parseBRNumber(value);if(!Number.isFinite(amount)||amount<=0)return notify("Informe um valor válido.");const next=Math.min(Number(goal.target_amount),Number(goal.current_amount)+amount),{error}=await supabase.from("financial_goals").update({current_amount:next,status:next>=Number(goal.target_amount)?"completed":"active",updated_at:new Date().toISOString()}).eq("id",goal.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível atualizar a meta.");await load();notify(next>=Number(goal.target_amount)?"Parabéns! Meta concluída.":"Progresso da meta atualizado.")}
+  function simulate(e){e.preventDefault();const f=new FormData(e.currentTarget),principal=parseBRNumber(f.get("balance")),rate=(parseBRNumber(f.get("rate"))||0)/100,payment=parseBRNumber(f.get("payment")),extra=parseBRNumber(f.get("extra"))||0;if(!principal||!payment||payment+extra<=principal*rate)return notify("A parcela precisa ser maior que os juros do mês.");const run=extraValue=>{let balance=principal,months=0,interest=0;while(balance>.01&&months<1200){const fee=balance*rate;interest+=fee;balance=Math.max(0,balance+fee-payment-extraValue);months++}return{months,interest,total:principal+interest}};const base=run(0),accelerated=run(extra);setSimulation({base,accelerated,saved:base.interest-accelerated.interest})}
+  const tabs=[["visao","Visão inteligente",BrainCircuit],["duplicidades","Duplicidades",CopyCheck],["quitacao","Quitação",Calculator],["metas","Metas",Target],["assistente","Assistente",MessageCircle]];
+  return <div className="intelligence-page"><div className="page-head"><div><h2>Inteligência financeira</h2><p>Análises seguras para decidir melhor, sem alterar seus dados automaticamente.</p></div><span className="intelligence-badge"><ShieldCheck/>Dados protegidos por RLS</span></div><div className="intelligence-tabs">{tabs.map(([key,label,Icon])=><button key={key} className={tab===key?"active":""} onClick={()=>setTab(key)}><Icon/>{label}{key==="duplicidades"&&flagged.length>0?<b>{flagged.length}</b>:null}</button>)}</div>
+  {tab==="visao"&&<><div className="intelligence-summary"><article><Tags/><span><small>Classificação automática</small><strong>{classified.length} lançamento(s)</strong><p>Regras locais; Gemini poderá interpretar descrições ambíguas.</p></span></article><article><CopyCheck/><span><small>Possíveis duplicidades</small><strong>{flagged.length}</strong><p>Mesmo valor, tipo e data próxima exigem sua revisão.</p></span></article><article><CircleDollarSign/><span><small>Resultado comparado</small><strong className={difference>=0?"positive":"negative"}>{difference>=0?"+ ":""}{money(difference)}</strong><p>Diferença do resultado atual contra o mês anterior.</p></span></article><article><Target/><span><small>Metas ativas</small><strong>{goals.filter(g=>g.status==="active").length}</strong><p>Acompanhamento e valor mensal necessário calculados localmente.</p></span></article></div><section className="ai-preview"><Lightbulb/><div><small>PRÓXIMA ETAPA · GEMINI</small><h3>Economia personalizada e comparação mensal explicada</h3><p>A estrutura está pronta. Depois de proteger sua chave no Supabase, o Gemini receberá somente totais e categorias necessários, nunca sua senha.</p></div></section></>}
+  {tab==="duplicidades"&&<section className="intelligence-panel"><div className="panel-title"><div><h3>Revisão de duplicidades</h3><p>Nenhum lançamento é apagado automaticamente.</p></div></div>{flagged.map(item=><article className="duplicate-row" key={item.id}><CopyCheck/><div><strong>{item.name}</strong><span>{item.cat} · {item.date}</span></div><b>{money(item.value)}</b><div><button onClick={()=>reviewDuplicate(item,"dismissed")}>Não é duplicado</button><button className="danger-text" onClick={()=>reviewDuplicate(item,"confirmed")}>Confirmar alerta</button></div></article>)}{!flagged.length&&<EmptyState text="Nenhuma possível duplicidade aguardando revisão."/>}</section>}
+  {tab==="quitacao"&&<section className="intelligence-panel debt-simulator"><div><h3>Simulação de quitação antecipada</h3><p>Compare prazo e juros usando as condições informadas pelo seu credor.</p></div><form className="inline-form" onSubmit={simulate}><label>Dívida atual<input name="balance" inputMode="decimal" required placeholder="Ex.: 5.000,00"/></label><label>Juros ao mês (%)<input name="rate" inputMode="decimal" required placeholder="Ex.: 2,50"/></label><label>Parcela atual<input name="payment" inputMode="decimal" required placeholder="Ex.: 350,00"/></label><label>Valor extra mensal<input name="extra" inputMode="decimal" placeholder="Ex.: 100,00"/></label><button className="primary"><Calculator/>Simular</button></form>{simulation&&<div className="simulation-result"><span><small>Plano atual</small><strong>{simulation.base.months} meses</strong><b>{money(simulation.base.interest)} em juros</b></span><span><small>Com antecipação</small><strong>{simulation.accelerated.months} meses</strong><b>{money(simulation.accelerated.interest)} em juros</b></span><span className="saving"><small>Economia estimada</small><strong>{money(simulation.saved)}</strong><b>{simulation.base.months-simulation.accelerated.months} meses a menos</b></span></div>}<p className="legal-note">Simulação orientativa. Confirme saldo, juros, encargos e desconto de quitação com o credor.</p></section>}
+  {tab==="metas"&&<section className="intelligence-panel"><div className="panel-title"><div><h3>Metas financeiras inteligentes</h3><p>O valor mensal necessário é recalculado conforme prazo e progresso.</p></div><button className="primary" onClick={()=>setGoalOpen(true)}><Plus/>Nova meta</button></div>{goalOpen&&<form className="inline-form goal-form" onSubmit={saveGoal}><label>Nome da meta<input name="name" required placeholder="Ex.: Reserva de emergência"/></label><label>Valor desejado<input name="target" inputMode="decimal" required placeholder="10.000,00"/></label><label>Valor já reservado<input name="current" inputMode="decimal" placeholder="0,00"/></label><label>Data desejada<input name="date" type="date" required min={new Date().toISOString().slice(0,10)}/></label><label>Prioridade<select name="priority"><option value="high">Alta</option><option value="medium">Média</option><option value="low">Baixa</option></select></label><label className="wide">Observações<textarea name="notes"/></label><div className="form-actions"><button type="button" onClick={()=>setGoalOpen(false)}>Cancelar</button><button className="primary">Salvar meta</button></div></form>}<div className="goal-grid">{goals.map(goal=>{const target=Number(goal.target_amount),saved=Number(goal.current_amount),remaining=Math.max(0,target-saved),months=Math.max(1,(new Date(goal.target_date+"T12:00").getFullYear()-now.getFullYear())*12+new Date(goal.target_date+"T12:00").getMonth()-now.getMonth()),monthly=remaining/months,progress=Math.min(100,saved/target*100);return <article key={goal.id}><div><span className={`priority ${goal.priority}`}>{goal.priority==="high"?"Alta prioridade":goal.priority==="medium"?"Média prioridade":"Baixa prioridade"}</span><h3>{goal.name}</h3><small>Até {new Date(goal.target_date+"T12:00").toLocaleDateString("pt-BR")}</small></div><strong>{money(saved)} <small>de {money(target)}</small></strong><div className="goal-progress"><i style={{width:`${progress}%`}}/></div><p>Reserve aproximadamente <b>{money(monthly)} por mês</b>.</p><button onClick={()=>contribute(goal)} disabled={goal.status==="completed"}>{goal.status==="completed"?"Meta concluída":"Adicionar progresso"}</button></article>})}{!goals.length&&<EmptyState text="Crie sua primeira meta financeira."/>}</div></section>}
+  {tab==="assistente"&&<section className="assistant-coming"><BrainCircuit/><small>INTEGRAÇÃO PREPARADA</small><h3>Assistente Financeiro Gemini</h3><p>Após cadastrar a chave no Supabase, você poderá perguntar sobre saldo, gastos, dívidas e metas. O assistente será somente leitura por padrão e pedirá confirmação antes de qualquer ação.</p><div><span><Check/>Sugestões de economia</span><span><Check/>Comparação mensal explicada</span><span><Check/>Respostas sobre seus dados autorizados</span></div><button className="primary" disabled>Aguardando chave protegida</button></section>}
+  </div>
 }
 function StreamingsModule({owner,notify}){
   const[subscriptions,setSubscriptions]=useState([]),[charges,setCharges]=useState([]),[editing,setEditing]=useState(null),[open,setOpen]=useState(false),[shared,setShared]=useState(false),[participants,setParticipants]=useState([{name:"",phone:"",amount:""}]);
