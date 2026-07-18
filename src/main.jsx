@@ -216,6 +216,7 @@ function FinanceApp({ owner }) {
     [profileMenu,setProfileMenu]=useState(false),
     [appDialog,setAppDialog]=useState(null),
     [salaryNotice,setSalaryNotice]=useState(null),
+    [closureNotice,setClosureNotice]=useState(null),
     [avatarUrl,setAvatarUrl]=useState("");
   const dialogResolver=useRef(null);
   const notify = (m) => {
@@ -251,6 +252,7 @@ function FinanceApp({ owner }) {
   }, []);
   useEffect(()=>{(async()=>{if(!profile.avatar_url)return setAvatarUrl("");const{data}=await supabase.storage.from("finance-assets").createSignedUrl(profile.avatar_url,3600);setAvatarUrl(data?.signedUrl||"")})()},[profile.avatar_url]);
   useEffect(()=>{(async()=>{const count=await processSalarySchedule(owner.id);if(count)await loadTransactions();await loadSalaryNotifications()})()},[owner.id]);
+  useEffect(()=>{supabase.from("monthly_closures").select("*").eq("owner_id",owner.id).in("status",["pending","ready"]).order("reference_month",{ascending:true}).limit(1).maybeSingle().then(({data})=>setClosureNotice(data||null))},[owner.id]);
   const filtered = useMemo(
     () =>
       tx.filter((x) =>
@@ -297,6 +299,9 @@ function FinanceApp({ owner }) {
     if(ids.length){const{error}=await supabase.from("salary_events").update({notified_at:new Date().toISOString()}).eq("owner_id",owner.id).in("id",ids);if(error)return notify("Não foi possível confirmar esta notificação.")}
     setSalaryNotice(null);
   }
+  function closureRows(snapshot){return Object.entries(snapshot||{}).filter(([,rows])=>Array.isArray(rows)).flatMap(([origem,rows])=>rows.map(row=>({origem,...row})))}
+  function downloadBlob(blob,name){const link=document.createElement("a");link.href=URL.createObjectURL(blob);link.download=name;document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(link.href),3000)}
+  async function completeClosure(){const rows=closureRows(closureNotice.snapshot),month=closureNotice.reference_month.slice(0,7),headers=[...new Set(rows.flatMap(row=>Object.keys(row)))],csv=[headers.join(";"),...rows.map(row=>headers.map(key=>`"${String(typeof row[key]==="object"?JSON.stringify(row[key]):row[key]??"").replaceAll('"','""')}"`).join(";"))].join("\n");downloadBlob(new Blob(["\ufeff"+csv],{type:"text/csv;charset=utf-8"}),`fechamento-${month}.csv`);const{jsPDF}=await import("jspdf");const pdf=new jsPDF();pdf.setFontSize(18);pdf.text(`Fechamento mensal · ${month}`,14,18);pdf.setFontSize(9);let y=28;rows.forEach(row=>{const text=`${row.origem} · ${row.name||row.description||row.counterparty_name||row.participant_name||"Registro"} · ${money(Number(row.amount||row.total_amount||row.remaining_amount||0))}`;pdf.text(text.slice(0,105),14,y);y+=6;if(y>282){pdf.addPage();y=18}});pdf.save(`fechamento-${month}.pdf`);await supabase.from("monthly_closures").update({status:"completed",closed_at:new Date().toISOString(),downloaded_at:new Date().toISOString()}).eq("id",closureNotice.id).eq("owner_id",owner.id);setClosureNotice(null);notify("Fechamento concluído e arquivos baixados.")}
   useEffect(() => {loadTransactions();const refresh=()=>loadTransactions();addEventListener("finance-data-changed",refresh);return()=>removeEventListener("finance-data-changed",refresh)}, [owner.id]);
   async function loadCustomModules(){const{data}=await supabase.from("custom_modules").select("*").eq("owner_id",owner.id).eq("active",true).order("created_at");setCustomModules(data||[])}
   useEffect(()=>{loadCustomModules()},[owner.id]);
@@ -379,7 +384,6 @@ function FinanceApp({ owner }) {
             >
               <I />
               <span>{label||n}</span>
-              {n === "Me devem" && <b>3</b>}
             </button>
           ))}
         </nav>
@@ -500,6 +504,7 @@ function FinanceApp({ owner }) {
       )}
       {modal==="salary"&&<SalaryModal owner={owner} close={()=>setModal(null)} notify={notify} refresh={loadTransactions}/>} 
       {salaryNotice&&<div className="salary-notice-bg" role="dialog" aria-modal="true" aria-labelledby="salary-notice-title"><section className="salary-notice"><span className="salary-notice-icon"><PiggyBank/></span><small>AUTOMAÇÃO CONCLUÍDA</small><h2 id="salary-notice-title">Reserva de Poupança atualizada</h2><p>Enquanto você estava fora, o Finance Hub processou sua regra mensal com segurança.</p><div className="salary-notice-value"><span>Valor reservado</span><strong>{money(salaryNotice.total)}</strong></div><div className="salary-notice-events">{salaryNotice.events.map(event=><span key={event.id}><b>{event.event_type==="salary_savings"?"Aporte do salário":"Aporte do adiantamento"}</b><strong>{money(Number(event.amount))}</strong></span>)}</div><button className="primary" onClick={acknowledgeSalaryNotice}><Check/>Entendi</button></section></div>}
+      {closureNotice&&<div className="salary-notice-bg" role="dialog" aria-modal="true"><section className="salary-notice closure-notice"><span className="salary-notice-icon"><FileText/></span><small>{closureNotice.mode==="automatic"?"FECHAMENTO PREPARADO":"FECHAMENTO PENDENTE"}</small><h2>O mês virou</h2><p>{closureNotice.mode==="automatic"?"Seu fechamento foi arquivado. Baixe agora as cópias CSV e PDF.":"O fechamento do mês anterior ainda não foi realizado. Os dados permanecem preservados até sua confirmação."}</p><div className="salary-notice-value"><span>Competência</span><strong>{new Date(closureNotice.reference_month+"T12:00").toLocaleDateString("pt-BR",{month:"long",year:"numeric"})}</strong></div><button className="primary" onClick={completeClosure}><Download/>{closureNotice.mode==="automatic"?"Baixar CSV e PDF":"Realizar fechamento agora"}</button></section></div>}
       {appDialog && <AppDialog dialog={appDialog} onAnswer={answerDialog} />}
       {toast && (
         <div className="toast">
@@ -2075,15 +2080,15 @@ function StreamingsModule({owner,notify}){
 }
 
 function SettingsModule({ owner, modules, reloadModules, onUpdate, dark, setDark, notify, ask }) {
-  const [name, setName] = useState(owner.name),[appName,setAppName]=useState(owner.app_name||"Finance Hub"),[appColor,setAppColor]=useState(owner.app_color||"#6445ED"),[backgroundColor,setBackgroundColor]=useState(owner.background_color||"#F6F8FC"),[streamingEnabled,setStreamingEnabled]=useState(Boolean(owner.streaming_enabled)),[email,setEmail]=useState(""),[password,setPassword]=useState(""),[showPassword,setShowPassword]=useState(false),[savingPassword,setSavingPassword]=useState(false),[assetBusy,setAssetBusy]=useState("");
+  const [name, setName] = useState(owner.name),[appName,setAppName]=useState(owner.app_name||"Finance Hub"),[appColor,setAppColor]=useState(owner.app_color||"#6445ED"),[backgroundColor,setBackgroundColor]=useState(owner.background_color||"#F6F8FC"),[streamingEnabled,setStreamingEnabled]=useState(Boolean(owner.streaming_enabled)),[closureMode,setClosureMode]=useState(owner.monthly_closure_mode||"manual"),[email,setEmail]=useState(""),[password,setPassword]=useState(""),[showPassword,setShowPassword]=useState(false),[savingPassword,setSavingPassword]=useState(false),[assetBusy,setAssetBusy]=useState("");
   useEffect(()=>{supabase.auth.getUser().then(({data})=>setEmail(data.user?.email||""))},[]);
   async function save(e) {
     e.preventDefault();
     const { error } = await supabase
       .from("owners")
-      .update({ name,app_name:appName,app_color:appColor,background_color:backgroundColor,streaming_enabled:streamingEnabled, updated_at: new Date().toISOString() })
+      .update({ name,app_name:appName,app_color:appColor,background_color:backgroundColor,streaming_enabled:streamingEnabled,monthly_closure_mode:closureMode, updated_at: new Date().toISOString() })
       .eq("id", owner.id);
-    if(error)return notify("Erro ao salvar personalização.");onUpdate({...owner,name,app_name:appName,app_color:appColor,background_color:backgroundColor,streaming_enabled:streamingEnabled});notify("Personalização salva.");
+    if(error)return notify("Erro ao salvar personalização.");onUpdate({...owner,name,app_name:appName,app_color:appColor,background_color:backgroundColor,streaming_enabled:streamingEnabled,monthly_closure_mode:closureMode});notify("Personalização salva.");
   }
   async function uploadAsset(file,kind){if(!file)return;if(!["image/jpeg","image/png","image/webp","image/gif"].includes(file.type))return notify("Escolha uma imagem JPG, PNG, WEBP ou GIF.");if(file.size>5*1024*1024)return notify("A imagem deve ter no máximo 5 MB.");setAssetBusy(kind);const extension=(file.name.split(".").pop()||"jpg").toLowerCase().replace(/[^a-z0-9]/g,""),path=`${owner.id}/${kind}-${Date.now()}.${extension}`,column=kind==="avatar"?"avatar_url":"background_image_url",oldPath=owner[column];const{error:uploadError}=await supabase.storage.from("finance-assets").upload(path,file,{contentType:file.type});if(uploadError){setAssetBusy("");return notify("Não foi possível enviar a imagem.")}const{error}=await supabase.from("owners").update({[column]:path,updated_at:new Date().toISOString()}).eq("id",owner.id);setAssetBusy("");if(error){await supabase.storage.from("finance-assets").remove([path]);return notify("A imagem foi enviada, mas não foi possível vinculá-la ao perfil.")}if(oldPath)await supabase.storage.from("finance-assets").remove([oldPath]);onUpdate({...owner,[column]:path});notify(kind==="avatar"?"Foto de perfil atualizada.":"Imagem de fundo atualizada.")}
   async function linkEmail(){if(!email)return notify("Informe um e-mail válido.");const{error}=await supabase.auth.updateUser({email},{emailRedirectTo:APP_URL});notify(error?authErrorPt(error,"Não foi possível atualizar o e-mail."):"Enviamos a confirmação para o novo e-mail.")}
@@ -2114,6 +2119,7 @@ function SettingsModule({ owner, modules, reloadModules, onUpdate, dark, setDark
           />
         </label>
         <label className="setting-row"><span><strong>Ativar Streamings</strong><small>Adiciona a gestão de assinaturas compartilhadas ao menu lateral</small></span><input type="checkbox" checked={streamingEnabled} onChange={e=>setStreamingEnabled(e.target.checked)}/></label>
+        <label className="setting-row"><span><strong>Fechamento mensal automático</strong><small>Prepara o arquivo do mês anterior e solicita o download no próximo acesso</small></span><input type="checkbox" checked={closureMode==="automatic"} onChange={e=>setClosureMode(e.target.checked?"automatic":"manual")}/></label>
         <button className="primary">Salvar configurações</button>
       </form>
     </div><div className="settings-panel security-panel"><h2>Segurança da conta</h2><p className="settings-help">Sua senha atual nunca pode ser visualizada. Por segurança, ela é protegida de forma irreversível. Aqui você pode atualizar o e-mail ou criar uma nova senha.</p><label>E-mail da conta<input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="seu@email.com"/></label><button onClick={linkEmail}>Atualizar e-mail</button><label>Nova senha<div className="password-field"><input type={showPassword?"text":"password"} value={password} onChange={e=>setPassword(e.target.value)} minLength="10" autoComplete="new-password" placeholder="Mínimo de 10 caracteres"/><button type="button" onClick={()=>setShowPassword(!showPassword)} aria-label={showPassword?"Ocultar senha digitada":"Mostrar senha digitada"}><Eye/>{showPassword?"Ocultar":"Mostrar"}</button></div></label><small className="password-note">Este campo mostra apenas a nova senha que você está digitando, nunca a senha atual.</small><button className="primary account-password-button" onClick={setAccountPassword} disabled={password.length<10||savingPassword}>{savingPassword?"Alterando…":"Alterar senha"}</button></div><div className="settings-panel settings-modules"><h2>Funções criadas</h2><p className="settings-help">Edite o nome ou exclua botões criados por você.</p>{modules.map(m=><div className="module-setting" key={m.id}><span><Sparkles/><strong>{m.name}</strong><small>{m.field_schema?.length||0} campos</small></span><div><button onClick={()=>editModule(m)}>Editar</button><button className="danger-text" onClick={()=>deleteModule(m)}>Excluir</button></div></div>)}{!modules.length&&<EmptyState text="Nenhuma função personalizada."/>}</div></div>
