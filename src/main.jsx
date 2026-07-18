@@ -215,6 +215,7 @@ function FinanceApp({ owner }) {
     [profile,setProfile]=useState(owner),
     [profileMenu,setProfileMenu]=useState(false),
     [appDialog,setAppDialog]=useState(null),
+    [salaryNotice,setSalaryNotice]=useState(null),
     [avatarUrl,setAvatarUrl]=useState("");
   const dialogResolver=useRef(null);
   const notify = (m) => {
@@ -249,7 +250,7 @@ function FinanceApp({ owner }) {
     };
   }, []);
   useEffect(()=>{(async()=>{if(!profile.avatar_url)return setAvatarUrl("");const{data}=await supabase.storage.from("finance-assets").createSignedUrl(profile.avatar_url,3600);setAvatarUrl(data?.signedUrl||"")})()},[profile.avatar_url]);
-  useEffect(()=>{processSalarySchedule(owner.id).then(count=>{if(count)notify(`${count} lançamento(s) mensal(is) processado(s).`)})},[owner.id]);
+  useEffect(()=>{(async()=>{const count=await processSalarySchedule(owner.id);if(count)await loadTransactions();await loadSalaryNotifications()})()},[owner.id]);
   const filtered = useMemo(
     () =>
       tx.filter((x) =>
@@ -286,6 +287,15 @@ function FinanceApp({ owner }) {
             };
           }),
         );
+  }
+  async function loadSalaryNotifications(){
+    const{data,error}=await supabase.from("salary_events").select("id,event_type,amount,reference_month,created_at").eq("owner_id",owner.id).in("event_type",["salary_savings","advance_savings"]).is("notified_at",null).order("created_at",{ascending:true});
+    if(!error&&data?.length)setSalaryNotice({events:data,total:data.reduce((sum,event)=>sum+Number(event.amount),0)});
+  }
+  async function acknowledgeSalaryNotice(){
+    const ids=salaryNotice?.events.map(event=>event.id)||[];
+    if(ids.length){const{error}=await supabase.from("salary_events").update({notified_at:new Date().toISOString()}).eq("owner_id",owner.id).in("id",ids);if(error)return notify("Não foi possível confirmar esta notificação.")}
+    setSalaryNotice(null);
   }
   useEffect(() => {loadTransactions();const refresh=()=>loadTransactions();addEventListener("finance-data-changed",refresh);return()=>removeEventListener("finance-data-changed",refresh)}, [owner.id]);
   async function loadCustomModules(){const{data}=await supabase.from("custom_modules").select("*").eq("owner_id",owner.id).eq("active",true).order("created_at");setCustomModules(data||[])}
@@ -487,6 +497,7 @@ function FinanceApp({ owner }) {
         </Modal>
       )}
       {modal==="salary"&&<SalaryModal owner={owner} close={()=>setModal(null)} notify={notify} refresh={loadTransactions}/>} 
+      {salaryNotice&&<div className="salary-notice-bg" role="dialog" aria-modal="true" aria-labelledby="salary-notice-title"><section className="salary-notice"><span className="salary-notice-icon"><PiggyBank/></span><small>AUTOMAÇÃO CONCLUÍDA</small><h2 id="salary-notice-title">Reserva de Poupança atualizada</h2><p>Enquanto você estava fora, o Finance Hub processou sua regra mensal com segurança.</p><div className="salary-notice-value"><span>Valor reservado</span><strong>{money(salaryNotice.total)}</strong></div><div className="salary-notice-events">{salaryNotice.events.map(event=><span key={event.id}><b>{event.event_type==="salary_savings"?"Aporte do salário":"Aporte do adiantamento"}</b><strong>{money(Number(event.amount))}</strong></span>)}</div><button className="primary" onClick={acknowledgeSalaryNotice}><Check/>Entendi</button></section></div>}
       {appDialog && <AppDialog dialog={appDialog} onAnswer={answerDialog} />}
       {toast && (
         <div className="toast">
