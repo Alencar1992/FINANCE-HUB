@@ -121,9 +121,19 @@ Deno.serve(withSupabase({ auth: "user" }, async (req, ctx) => {
   try {
     const claims = ctx.userClaims as Record<string, unknown> | undefined;
     const ownerId = String(claims?.sub || claims?.id || "");
-    const aal = String(claims?.aal || "");
     if (!ownerId) return json(req, { erro: "Sessão inválida." }, 401);
-    if (aal !== "aal2") return json(req, { erro: "Confirme a autenticação em dois fatores para usar a Inteligência Financeira." }, 403);
+    const { data: assurance, error: assuranceError } =
+      await ctx.supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+    if (assuranceError || assurance?.currentLevel !== "aal2") {
+      return json(
+        req,
+        {
+          erro: "Confirme a autenticação em dois fatores para usar a Inteligência Financeira.",
+          codigo: "MFA_REQUIRED",
+        },
+        403,
+      );
+    }
 
     const body = await req.json().catch(() => ({}));
     const mode = String(body?.mode || "assistant") as Mode;
