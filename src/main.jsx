@@ -42,6 +42,7 @@ import {
   PiggyBank,
   Percent,
   RefreshCw,
+  Banknote,
 } from "lucide-react";
 import "./styles.css";
 import { supabase } from "./lib/supabase";
@@ -72,6 +73,23 @@ const parseBRNumber = (value) => {
   if (!raw) return Number.NaN;
   return Number(raw.includes(",") ? raw.replace(/\./g, "").replace(",", ".") : raw);
 };
+const monthStart=(date=new Date())=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-01`;
+const dueDateFor=(day,date=new Date())=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(Math.min(Number(day),new Date(date.getFullYear(),date.getMonth()+1,0).getDate())).padStart(2,"0")}`;
+async function addSavingsContribution(ownerId,amount,label){
+  if(amount<=0)return null;
+  let{data:investment}=await supabase.from("investments").select("*").eq("owner_id",ownerId).ilike("name","Reserva de Poupança").eq("active",true).maybeSingle();
+  if(investment){const{data,error}=await supabase.from("investments").update({initial_amount:Number(investment.initial_amount)+amount,current_amount:Number(investment.current_amount)+amount,updated_at:new Date().toISOString()}).eq("id",investment.id).eq("owner_id",ownerId).select().single();if(error)throw error;investment=data}else{const{data,error}=await supabase.from("investments").insert({owner_id:ownerId,name:"Reserva de Poupança",bank_name:"Reserva automática",investment_type:"Poupança",initial_amount:amount,current_amount:amount,rate_mode:"savings",contracted_rate:null,invested_at:new Date().toISOString().slice(0,10),notes:"Criada automaticamente pela central de salário."}).select().single();if(error)throw error;investment=data}
+  const reference=monthStart(),{data:snapshot}=await supabase.from("investment_snapshots").select("*").eq("investment_id",investment.id).eq("reference_month",reference).maybeSingle(),contribution=Number(snapshot?.contribution||0);await supabase.from("investment_snapshots").upsert({owner_id:ownerId,investment_id:investment.id,reference_month:reference,amount:Number(investment.current_amount),contribution:contribution+amount},{onConflict:"investment_id,reference_month"});
+  const{data:expense,error:expenseError}=await supabase.from("transactions").insert({owner_id:ownerId,name:`Aporte Reserva de Poupança · ${label}`,category:"Investimentos",amount,total_amount:amount,installment_amount:amount,transaction_type:"expense",transaction_date:new Date().toISOString().slice(0,10),status:"paid",is_installment:false,installment_count:1,installment_number:1,notes:"Aporte debitado automaticamente do salário."}).select("id").single();if(expenseError)throw expenseError;return{investmentId:investment.id,transactionId:expense.id}
+}
+async function processSalarySchedule(ownerId){
+  const{data:settings}=await supabase.from("salary_settings").select("*").eq("owner_id",ownerId).maybeSingle();if(!settings)return 0;
+  const now=new Date(),today=now.getDate(),reference=monthStart(now);let created=0;
+  const processPayment=async(kind,enabled,amount,day)=>{if(!enabled||Number(amount)<=0||today<Math.min(Number(day),new Date(now.getFullYear(),now.getMonth()+1,0).getDate()))return;const{data:exists}=await supabase.from("salary_events").select("id").eq("owner_id",ownerId).eq("reference_month",reference).eq("event_type",kind).maybeSingle();if(exists)return;const{data:event,error:eventError}=await supabase.from("salary_events").insert({owner_id:ownerId,reference_month:reference,event_type:kind,amount}).select().single();if(eventError)return;const label=kind==="salary"?"Salário":"Adiantamento salarial",{data:transaction,error}=await supabase.from("transactions").insert({owner_id:ownerId,name:`${label} · ${reference.slice(0,7)}`,category:"Salário",amount:Number(amount),total_amount:Number(amount),installment_amount:Number(amount),transaction_type:"income",transaction_date:dueDateFor(day,now),status:"received",is_installment:false,installment_count:1,installment_number:1,notes:"Inserido automaticamente pela central de salário."}).select("id").single();if(error){await supabase.from("salary_events").delete().eq("id",event.id);return}await supabase.from("salary_events").update({transaction_id:transaction.id}).eq("id",event.id);created++;
+    const shouldSave=settings.savings_enabled&&settings.savings_recurring&&((kind==="salary"&&settings.savings_on_salary)||(kind==="advance"&&settings.savings_on_advance));if(!shouldSave)return;const savingType=`${kind}_savings`,{data:savingExists}=await supabase.from("salary_events").select("id").eq("owner_id",ownerId).eq("reference_month",reference).eq("event_type",savingType).maybeSingle();if(savingExists)return;const savingAmount=Math.round((settings.savings_mode==="percentage"?Number(amount)*Number(settings.savings_value)/100:Number(settings.savings_value))*100)/100;if(savingAmount<=0)return;try{const result=await addSavingsContribution(ownerId,savingAmount,label);await supabase.from("salary_events").insert({owner_id:ownerId,reference_month:reference,event_type:savingType,amount:savingAmount,transaction_id:result.transactionId,investment_id:result.investmentId});created++}catch(error){console.error("Falha no aporte automático",error)}
+  };
+  await processPayment("salary",settings.salary_enabled,settings.salary_amount,settings.salary_day);await processPayment("advance",settings.advance_enabled,settings.advance_amount,settings.advance_day);if(created)window.dispatchEvent(new Event("finance-data-changed"));return created
+}
 const nav = [
   ["Início", Home],
   ["Movimentações", ArrowLeftRight],
@@ -231,6 +249,7 @@ function FinanceApp({ owner }) {
     };
   }, []);
   useEffect(()=>{(async()=>{if(!profile.avatar_url)return setAvatarUrl("");const{data}=await supabase.storage.from("finance-assets").createSignedUrl(profile.avatar_url,3600);setAvatarUrl(data?.signedUrl||"")})()},[profile.avatar_url]);
+  useEffect(()=>{processSalarySchedule(owner.id).then(count=>{if(count)notify(`${count} lançamento(s) mensal(is) processado(s).`)})},[owner.id]);
   const filtered = useMemo(
     () =>
       tx.filter((x) =>
@@ -386,14 +405,7 @@ function FinanceApp({ owner }) {
             </div>
           </div>
           <div className="head-actions">
-            <label className="search">
-              <Search />
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Buscar em todo o Finance Hub"
-              />
-            </label>
+            <button className="salary-trigger" onClick={()=>setModal("salary")}><Banknote/><span><strong>Salário</strong><small>Pagamento, adiantamento e reserva</small></span></button>
             <button className="icon" onClick={() => setDark(!dark)}>
               {dark ? <Sun /> : <Moon />}
             </button>
@@ -474,6 +486,7 @@ function FinanceApp({ owner }) {
           />
         </Modal>
       )}
+      {modal==="salary"&&<SalaryModal owner={owner} close={()=>setModal(null)} notify={notify} refresh={loadTransactions}/>} 
       {appDialog && <AppDialog dialog={appDialog} onAnswer={answerDialog} />}
       {toast && (
         <div className="toast">
@@ -579,6 +592,13 @@ function TransactionModal({ addTx, close }) {
       </form>
     </Modal>
   );
+}
+function SalaryModal({owner,close,notify,refresh}){
+  const[loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[form,setForm]=useState({salary_amount:"",salary_day:5,salary_enabled:false,advance_amount:"",advance_day:20,advance_enabled:false,savings_enabled:false,savings_mode:"percentage",savings_value:"",savings_recurring:false,savings_on_salary:true,savings_on_advance:false});
+  useEffect(()=>{(async()=>{const{data}=await supabase.from("salary_settings").select("*").eq("owner_id",owner.id).maybeSingle();if(data)setForm({...data,salary_amount:Number(data.salary_amount).toFixed(2).replace(".",","),advance_amount:Number(data.advance_amount).toFixed(2).replace(".",","),savings_value:Number(data.savings_value).toFixed(data.savings_mode==="percentage"?2:2).replace(".",",")});setLoading(false)})()},[owner.id]);
+  const set=(key,value)=>setForm(current=>({...current,[key]:value})),salary=parseBRNumber(form.salary_amount)||0,advance=parseBRNumber(form.advance_amount)||0,savingValue=parseBRNumber(form.savings_value)||0,calc=amount=>Math.round((form.savings_mode==="percentage"?amount*savingValue/100:savingValue)*100)/100,salarySaving=form.savings_enabled&&form.savings_on_salary?calc(salary):0,advanceSaving=form.savings_enabled&&form.savings_on_advance?calc(advance):0;
+  async function save(e){e.preventDefault();setSaving(true);const payload={owner_id:owner.id,salary_amount:salary,salary_day:Number(form.salary_day),salary_enabled:form.salary_enabled,advance_amount:advance,advance_day:Number(form.advance_day),advance_enabled:form.advance_enabled,savings_enabled:form.savings_enabled,savings_mode:form.savings_mode,savings_value:savingValue,savings_recurring:form.savings_recurring,savings_on_salary:form.savings_on_salary,savings_on_advance:form.savings_on_advance,updated_at:new Date().toISOString()};const{error}=await supabase.from("salary_settings").upsert(payload,{onConflict:"owner_id"});if(error){setSaving(false);return notify("Não foi possível salvar a configuração salarial.")}const count=await processSalarySchedule(owner.id);await refresh();setSaving(false);close();notify(count?`${count} lançamento(s) processado(s) e configuração salva.`:"Configuração salarial salva.")}
+  return <Modal title="Central de salário" close={close}>{loading?<p>Carregando configuração…</p>:<form className="form salary-form" onSubmit={save}><section><div className="salary-section-title"><Banknote/><div><strong>Pagamento principal</strong><small>Entrada mensal do salário.</small></div></div><div className="fields"><label>Valor do salário<input value={form.salary_amount} onChange={e=>set("salary_amount",e.target.value)} inputMode="decimal" placeholder="1.234,56" required/></label><label>Dia do pagamento<input type="number" min="1" max="31" value={form.salary_day} onChange={e=>set("salary_day",e.target.value)} required/></label></div><label className="salary-check"><input type="checkbox" checked={form.salary_enabled} onChange={e=>set("salary_enabled",e.target.checked)}/><span><Check/></span>Inserir o salário automaticamente todos os meses</label></section><section><div className="salary-section-title"><CalendarDays/><div><strong>Adiantamento salarial</strong><small>Configure se você recebe adiantamento.</small></div></div><div className="fields"><label>Valor do adiantamento<input value={form.advance_amount} onChange={e=>set("advance_amount",e.target.value)} inputMode="decimal" placeholder="0,00"/></label><label>Dia do adiantamento<input type="number" min="1" max="31" value={form.advance_day} onChange={e=>set("advance_day",e.target.value)}/></label></div><label className="salary-check"><input type="checkbox" checked={form.advance_enabled} onChange={e=>set("advance_enabled",e.target.checked)}/><span><Check/></span>Inserir o adiantamento automaticamente todos os meses</label></section><section className="salary-savings"><div className="salary-section-title"><PiggyBank/><div><strong>Reserva de Poupança</strong><small>Debita do saldo e adiciona automaticamente aos investimentos.</small></div></div><label className="salary-check"><input type="checkbox" checked={form.savings_enabled} onChange={e=>set("savings_enabled",e.target.checked)}/><span><Check/></span>Habilitar Reserva de Poupança</label>{form.savings_enabled&&<><div className="fields"><label>Forma de cálculo<select value={form.savings_mode} onChange={e=>set("savings_mode",e.target.value)}><option value="percentage">Porcentagem do recebimento</option><option value="fixed">Valor fixo em reais</option></select></label><label>{form.savings_mode==="percentage"?"Porcentagem":"Valor do aporte"}<input value={form.savings_value} onChange={e=>set("savings_value",e.target.value)} inputMode="decimal" placeholder={form.savings_mode==="percentage"?"Ex.: 10,00%":"Ex.: 250,00"}/></label></div><div className="salary-apply"><label><input type="checkbox" checked={form.savings_on_salary} onChange={e=>set("savings_on_salary",e.target.checked)}/>Aplicar no salário</label><label><input type="checkbox" checked={form.savings_on_advance} onChange={e=>set("savings_on_advance",e.target.checked)}/>Aplicar no adiantamento</label></div><label className="salary-check"><input type="checkbox" checked={form.savings_recurring} onChange={e=>set("savings_recurring",e.target.checked)}/><span><Check/></span>Realizar o aporte automaticamente nas datas configuradas</label><div className="salary-preview"><span>Próximo aporte calculado</span><strong>{money(salarySaving+advanceSaving)}</strong><small>Salário: {money(salarySaving)} · Adiantamento: {money(advanceSaving)}</small></div></>}</section><p className="salary-note"><ShieldCheck/>Cada competência é registrada apenas uma vez. Se o aplicativo não estiver aberto na data, o processamento acontece no próximo acesso.</p><div className="form-actions"><button type="button" onClick={close}>Cancelar</button><button className="primary" disabled={saving}>{saving?"Salvando…":"Salvar configuração"}</button></div></form>}</Modal>
 }
 function NotificationCount({ owner }) {
   const [count, setCount] = useState(0);
