@@ -1767,6 +1767,7 @@ function DebtorGroup({ group, isRecv, settle, notify }) {
 }
 
 function nextCardDue(card){if(!card)return"";const now=new Date(),target=new Date(now.getFullYear(),now.getMonth()+(now.getDate()>card.due_day?1:0),1),last=new Date(target.getFullYear(),target.getMonth()+1,0).getDate();target.setDate(Math.min(card.due_day,last));return `${target.getFullYear()}-${String(target.getMonth()+1).padStart(2,"0")}-${String(target.getDate()).padStart(2,"0")}`}
+function bankLogo(bank){const key=normalizeText(bank),domains=[["inter","inter.co"],["neon","neon.com.br"],["santander","santander.com.br"],["nubank","nubank.com.br"],["itau","itau.com.br"],["bradesco","bradesco.com.br"],["caixa","caixa.gov.br"],["bancodobrasil","bb.com.br"],["c6","c6bank.com.br"],["picpay","picpay.com"],["mercadopago","mercadopago.com.br"]],found=domains.find(([name])=>key.includes(name));return found?`https://www.google.com/s2/favicons?domain=${found[1]}&sz=128`:null}
 function CardsModule({ owner, notify }) {
   const [cards, setCards] = useState([]),
     [purchases, setPurchases] = useState([]),
@@ -1801,6 +1802,7 @@ function CardsModule({ owner, notify }) {
         closing_day: Number(f.get("closing")),
         due_day: Number(f.get("due")),
         color: f.get("color"),
+        logo_url: bankLogo(f.get("bank")),
       });
     if (error) return notify("Erro ao cadastrar cartão.");
     setOpen(false);
@@ -1863,7 +1865,7 @@ function CardsModule({ owner, notify }) {
             key={c.id}
             onClick={()=>setSelectedCard(c)}
           >
-            <CreditCard />
+            {c.logo_url?<img className="card-bank-logo" src={c.logo_url} alt={`Logo ${c.bank}`} onError={e=>e.currentTarget.style.display="none"}/>:<CreditCard />}
             <small>{c.bank}</small>
             <h3>{c.name}</h3>
             <strong>Limite {money(Number(c.credit_limit))}</strong>
