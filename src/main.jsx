@@ -51,6 +51,7 @@ import {
 } from "lucide-react";
 import "./styles.css";
 import { supabase } from "./lib/supabase";
+import ExpenseElimination from "./ExpenseElimination";
 
 const APP_URL = "https://alencar1992.github.io/FINANCE-HUB/";
 const authErrorPt = (error, fallback = "Não foi possível concluir. Tente novamente.") => {
@@ -120,105 +121,9 @@ const nav = [
   ["Investimentos", PiggyBank],
   ["Configurações", Settings],
 ];
-const seedTx = [
-  {
-    id: 1,
-    name: "Salário Linx",
-    cat: "Salário",
-    date: "05 jul",
-    value: 5000,
-    type: "in",
-    status: "Recebido",
-  },
-  {
-    id: 2,
-    name: "Expresso Tapiocaria",
-    cat: "Renda extra",
-    date: "08 jul",
-    value: 1180,
-    type: "in",
-    status: "Recebido",
-  },
-  {
-    id: 3,
-    name: "Condomínio",
-    cat: "Moradia",
-    date: "10 jul",
-    value: 742.8,
-    type: "out",
-    status: "Pago",
-  },
-  {
-    id: 4,
-    name: "Mercado do mês",
-    cat: "Alimentação",
-    date: "12 jul",
-    value: 628.4,
-    type: "out",
-    status: "Pago",
-  },
-  {
-    id: 5,
-    name: "Revisão Lander",
-    cat: "Transporte",
-    date: "15 jul",
-    value: 399.75,
-    type: "out",
-    status: "Pendente",
-  },
-];
-const debts = [
-  {
-    name: "Marcelo Silva",
-    desc: "Compra no cartão Inter",
-    value: 680,
-    due: "Hoje",
-    tone: "warning",
-    phone: "5511999999999",
-  },
-  {
-    name: "Fernanda Costa",
-    desc: "Netflix + Spotify",
-    value: 74.9,
-    due: "Amanhã",
-    tone: "orange",
-    phone: "5511988888888",
-  },
-  {
-    name: "Ezequiel",
-    desc: "Equipamento da tapiocaria",
-    value: 450,
-    due: "Vencido há 2 dias",
-    tone: "danger",
-    phone: "5511977777777",
-  },
-];
-const owed = [
-  {
-    name: "Loja do Amigo",
-    desc: "Capacete Lander",
-    total: 900,
-    left: 600,
-    next: "20 jul · 2/4",
-    tone: "warning",
-  },
-  {
-    name: "Banco Inter",
-    desc: "Empréstimo pessoal",
-    total: 2400,
-    left: 1320,
-    next: "28 jul · 12/24",
-    tone: "orange",
-  },
-  {
-    name: "Oficina do Zé",
-    desc: "Manutenção da moto",
-    total: 520,
-    left: 520,
-    next: "Vencido há 2 dias",
-    tone: "danger",
-  },
-];
+const seedTx = [];
+const debts = [];
+const owed = [];
 
 function FinanceApp({ owner }) {
   const [page, setPage] = useState("Início"),
@@ -331,7 +236,7 @@ function FinanceApp({ owner }) {
   useEffect(() => {loadTransactions();const refresh=()=>loadTransactions();addEventListener("finance-data-changed",refresh);return()=>removeEventListener("finance-data-changed",refresh)}, [owner.id]);
   async function loadCustomModules(){const{data}=await supabase.from("custom_modules").select("*").eq("owner_id",owner.id).eq("active",true).order("created_at");setCustomModules(data||[])}
   useEffect(()=>{loadCustomModules()},[owner.id]);
-  const visibleNav=[...nav.slice(0,7),...(profile.streaming_enabled?[["Streamings",Play]]:[]),...customModules.map(m=>[`module:${m.id}`,Sparkles,m.name]),...nav.slice(7)];
+  const visibleNav=[...nav.slice(0,7),...(profile.expense_plan_enabled!==false?[["Eliminar despesas",Target]]:[]),...(profile.streaming_enabled?[["Streamings",Play]]:[]),...customModules.map(m=>[`module:${m.id}`,Sparkles,m.name]),...nav.slice(7)];
   async function addTx(e) {
     e.preventDefault();
     const f = new FormData(e.currentTarget),
@@ -507,6 +412,8 @@ function FinanceApp({ owner }) {
             <CalendarModule owner={owner} tx={tx} />
           ) : page === "Relatórios" ? (
             <ReportsModule tx={tx} />
+          ) : page === "Eliminar despesas" ? (
+            <ExpenseElimination owner={owner} notify={notify}/>
           ) : page === "Inteligência" ? (
             <FinancialIntelligence owner={owner} tx={tx} notify={notify} refresh={loadTransactions} ask={ask}/>
           ) : page === "Streamings" ? (
@@ -2146,16 +2053,16 @@ function StreamingsModule({owner,notify}){
 }
 
 function SettingsModule({ owner, modules, reloadModules, onUpdate, dark, setDark, notify, ask, openBuilder }) {
-  const [section,setSection]=useState("profile"),[name, setName] = useState(owner.name),[appName,setAppName]=useState(owner.app_name||"Finance Hub"),[appColor,setAppColor]=useState(owner.app_color||"#6445ED"),[backgroundColor,setBackgroundColor]=useState(owner.background_color||"#F6F8FC"),[streamingEnabled,setStreamingEnabled]=useState(Boolean(owner.streaming_enabled)),[closureMode,setClosureMode]=useState(owner.monthly_closure_mode||"manual"),[closureDestination,setClosureDestination]=useState(owner.closure_destination||"local"),[destinationOpen,setDestinationOpen]=useState(false),[email,setEmail]=useState(""),[password,setPassword]=useState(""),[showPassword,setShowPassword]=useState(false),[savingPassword,setSavingPassword]=useState(false),[assetBusy,setAssetBusy]=useState("");
+  const [section,setSection]=useState("profile"),[name, setName] = useState(owner.name),[appName,setAppName]=useState(owner.app_name||"Finance Hub"),[appColor,setAppColor]=useState(owner.app_color||"#6445ED"),[backgroundColor,setBackgroundColor]=useState(owner.background_color||"#F6F8FC"),[streamingEnabled,setStreamingEnabled]=useState(Boolean(owner.streaming_enabled)),[expensePlanEnabled,setExpensePlanEnabled]=useState(owner.expense_plan_enabled!==false),[closureMode,setClosureMode]=useState(owner.monthly_closure_mode||"manual"),[closureDestination,setClosureDestination]=useState(owner.closure_destination||"local"),[destinationOpen,setDestinationOpen]=useState(false),[email,setEmail]=useState(""),[password,setPassword]=useState(""),[showPassword,setShowPassword]=useState(false),[savingPassword,setSavingPassword]=useState(false),[assetBusy,setAssetBusy]=useState("");
   useEffect(()=>{supabase.auth.getUser().then(({data})=>setEmail(data.user?.email||""))},[]);
   useEffect(()=>{const layout=document.querySelector(".settings-layout");if(layout){layout.dataset.section=section;layout.firstElementChild?.classList.add("profile-appearance-panel")}},[section]);
   async function save(e) {
     e.preventDefault();
     const { error } = await supabase
       .from("owners")
-      .update({ name,app_name:appName,app_color:appColor,background_color:backgroundColor,streaming_enabled:streamingEnabled,monthly_closure_mode:closureMode,closure_destination:closureDestination, updated_at: new Date().toISOString() })
+      .update({ name,app_name:appName,app_color:appColor,background_color:backgroundColor,streaming_enabled:streamingEnabled,expense_plan_enabled:expensePlanEnabled,monthly_closure_mode:closureMode,closure_destination:closureDestination, updated_at: new Date().toISOString() })
       .eq("id", owner.id);
-    if(error)return notify("Erro ao salvar personalização.");onUpdate({...owner,name,app_name:appName,app_color:appColor,background_color:backgroundColor,streaming_enabled:streamingEnabled,monthly_closure_mode:closureMode,closure_destination:closureDestination});notify("Personalização salva.");
+    if(error)return notify("Erro ao salvar personalização.");onUpdate({...owner,name,app_name:appName,app_color:appColor,background_color:backgroundColor,streaming_enabled:streamingEnabled,expense_plan_enabled:expensePlanEnabled,monthly_closure_mode:closureMode,closure_destination:closureDestination});notify("Personalização salva.");
   }
   async function uploadAsset(file,kind){if(!file)return;if(!["image/jpeg","image/png","image/webp","image/gif"].includes(file.type))return notify("Escolha uma imagem JPG, PNG, WEBP ou GIF.");if(file.size>5*1024*1024)return notify("A imagem deve ter no máximo 5 MB.");setAssetBusy(kind);const extension=(file.name.split(".").pop()||"jpg").toLowerCase().replace(/[^a-z0-9]/g,""),path=`${owner.id}/${kind}-${Date.now()}.${extension}`,column=kind==="avatar"?"avatar_url":"background_image_url",oldPath=owner[column];const{error:uploadError}=await supabase.storage.from("finance-assets").upload(path,file,{contentType:file.type});if(uploadError){setAssetBusy("");return notify("Não foi possível enviar a imagem.")}const{error}=await supabase.from("owners").update({[column]:path,updated_at:new Date().toISOString()}).eq("id",owner.id);setAssetBusy("");if(error){await supabase.storage.from("finance-assets").remove([path]);return notify("A imagem foi enviada, mas não foi possível vinculá-la ao perfil.")}if(oldPath)await supabase.storage.from("finance-assets").remove([oldPath]);onUpdate({...owner,[column]:path});notify(kind==="avatar"?"Foto de perfil atualizada.":"Imagem de fundo atualizada.")}
   async function linkEmail(){if(!email)return notify("Informe um e-mail válido.");const{error}=await supabase.auth.updateUser({email},{emailRedirectTo:APP_URL});notify(error?authErrorPt(error,"Não foi possível atualizar o e-mail."):"Enviamos a confirmação para o novo e-mail.")}
@@ -2185,6 +2092,7 @@ function SettingsModule({ owner, modules, reloadModules, onUpdate, dark, setDark
           />
         </label>
         <label className="setting-row"><span><strong>Ativar Streamings</strong><small>Adiciona a gestão de assinaturas compartilhadas ao menu lateral</small></span><input type="checkbox" checked={streamingEnabled} onChange={e=>setStreamingEnabled(e.target.checked)}/></label>
+        <label className="setting-row"><span><strong>Ativar Eliminação de despesas</strong><small>Mostra ou remove o módulo do menu sem apagar os dados</small></span><input type="checkbox" checked={expensePlanEnabled} onChange={e=>setExpensePlanEnabled(e.target.checked)}/></label>
         <label className="setting-row"><span><strong>Fechamento mensal automático</strong><small>Prepara o arquivo do mês anterior e solicita o download no próximo acesso</small></span><input type="checkbox" checked={closureMode==="automatic"} onChange={e=>{setClosureMode(e.target.checked?"automatic":"manual");if(e.target.checked)setDestinationOpen(true)}}/></label>
         {destinationOpen&&<div className="destination-picker"><div><strong>Onde deseja salvar os fechamentos?</strong><small>Serviços em nuvem precisam ser conectados antes do primeiro envio.</small></div>{[["local","Neste dispositivo"],["google_drive","Google Drive"],["onedrive","OneDrive"]].map(([value,label])=><button type="button" className={closureDestination===value?"selected":""} onClick={()=>setClosureDestination(value)} key={value}><Download/>{label}{closureDestination===value&&<Check/>}</button>)}<button type="button" className="primary" onClick={()=>setDestinationOpen(false)}>Confirmar local</button></div>}
         <button className="primary">Salvar configurações</button>
