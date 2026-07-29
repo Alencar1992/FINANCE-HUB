@@ -878,47 +878,6 @@ function Dashboard({ owner, setPage, notify, tx }) {
           </div>
           <WalletCards />
         </div>
-        <div className="stats">
-            {[
-            [
-              TrendingUp,
-              "Entradas",
-              income,
-              `${tx.filter((x) => x.type === "in").length} lançamentos`,
-              "green",
-            ],
-            [
-              TrendingDown,
-              "Saídas",
-              expense,
-              `${tx.filter((x) => x.type === "out").length} lançamentos`,
-              "red",
-            ],
-            [
-              UserRound,
-              "A receber",
-              receivable,
-              `${obligations.filter((x) => x.direction === "receivable").length} itens`,
-              "blue",
-            ],
-            [
-              CreditCard,
-              "A pagar",
-              payable,
-              `${obligations.filter((x) => x.direction === "payable").length + cardPurchases.length + subscriptions.length} itens · ${cards.length} cartões`,
-              "amber",
-            ],
-          ].map(([I, l, v, d, c]) => (
-            <div className="stat" key={l}>
-              <i className={c}>
-                <I />
-              </i>
-              <span>{l}</span>
-              <strong>{money(v)}</strong>
-              <small>{d}</small>
-            </div>
-          ))}
-        </div>
       </section>
       <section className="main-grid">
         <div className="panel chart">
