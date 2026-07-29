@@ -9,11 +9,12 @@
   background:linear-gradient(135deg,var(--card-custom,#6545ed),#071c3a)!important;
   box-shadow:0 28px 58px #0009,inset 0 1px #ffffff4a,inset 0 -1px #0004!important;
   transform-style:preserve-3d;
+  cursor:pointer;
 }
 .bank-card:before{content:"";position:absolute;z-index:-2;inset:0;background:linear-gradient(115deg,#fff0 18%,#ffffff18 42%,#fff0 58%);transform:translateX(-110%);transition:transform .7s ease}
 .bank-card:after{content:"";position:absolute;z-index:-2;width:230px;height:230px;right:-105px;bottom:-120px;border-radius:50%;border:1px solid #ffffff1c;box-shadow:0 0 0 28px #ffffff09,0 0 0 56px #ffffff05}
 .bank-card:hover:before{transform:translateX(115%)}.bank-card:hover{transform:perspective(900px) translateY(-7px) rotateX(2deg) rotateY(-1deg)!important}
-.bank-card-shine{position:absolute;z-index:-1;inset:0;background:radial-gradient(circle at 15% 0,#ffffff2e,transparent 30%),linear-gradient(180deg,#ffffff0b,transparent 45%)}
+.bank-card-shine{position:absolute;z-index:-1;inset:0;pointer-events:none;background:radial-gradient(circle at 15% 0,#ffffff2e,transparent 30%),linear-gradient(180deg,#ffffff0b,transparent 45%)}
 .bank-card-top{display:flex;align-items:center;justify-content:space-between;min-height:36px}
 .bank-card-brand{display:flex;align-items:center;gap:9px}.bank-card-brand b{font-size:15px;font-weight:800;letter-spacing:-.25px;text-shadow:0 1px 8px #0005}
 .bank-card .card-bank-logo{width:34px;height:34px;object-fit:contain;border-radius:10px;background:#fff;padding:5px;box-shadow:0 6px 18px #0003}
@@ -25,7 +26,7 @@
 .bank-card-bottom>span{display:flex;flex-direction:column;min-width:0}.bank-card-bottom small{font-size:6.5px!important;letter-spacing:.13em;opacity:.68;margin:0!important}
 .bank-card-bottom b{margin-top:2px;font-size:9px;letter-spacing:.035em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-transform:uppercase}
 .bank-card-meta{margin-top:10px;padding-top:8px;border-top:1px solid #ffffff20;display:flex;align-items:center;justify-content:space-between;gap:8px}
-.bank-card-meta>span{font-size:8px!important;margin:0;opacity:.82}.bank-card-meta em{font-size:8px!important;margin:0!important;opacity:.9;display:flex;align-items:center;gap:3px}
+.bank-card-meta>span{font-size:8px!important;margin:0;opacity:.82}.bank-card-meta em{font-size:8px!important;margin:0!important;opacity:.9;display:flex;align-items:center;gap:3px;padding:4px 6px;border-radius:8px;background:#ffffff12}.bank-card-meta em svg{width:12px;transition:transform .2s ease}.bank-card:hover .bank-card-meta em svg{transform:translateX(3px)}.bank-card:focus-visible{outline:3px solid #7d62f0;outline-offset:4px}
 
 /* Identidades bancárias */
 .bank-card.bank-santander{background:linear-gradient(140deg,#ec0000 0%,#b5001a 45%,#550016 100%)!important}
