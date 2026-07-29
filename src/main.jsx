@@ -58,6 +58,7 @@ import {
   ExternalLink,
 } from "lucide-react";
 import "./styles.css";
+import "./premium.css";
 import { supabase } from "./lib/supabase";
 import ExpenseElimination from "./ExpenseElimination";
 
