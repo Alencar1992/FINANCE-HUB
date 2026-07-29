@@ -60,6 +60,7 @@ import {
 import "./styles.css";
 import "./premium.css";
 import "./liquid.css";
+import "./bank-cards.css";
 import { supabase } from "./lib/supabase";
 import ExpenseElimination from "./ExpenseElimination";
 
@@ -1787,6 +1788,22 @@ function DebtorGroup({ group, isRecv, settle, notify }) {
 
 function nextCardDue(card){if(!card)return"";const now=new Date(),target=new Date(now.getFullYear(),now.getMonth()+(now.getDate()>card.due_day?1:0),1),last=new Date(target.getFullYear(),target.getMonth()+1,0).getDate();target.setDate(Math.min(card.due_day,last));return `${target.getFullYear()}-${String(target.getMonth()+1).padStart(2,"0")}-${String(target.getDate()).padStart(2,"0")}`}
 function bankLogo(bank){const key=normalizeText(bank),domains=[["inter","inter.co"],["neon","neon.com.br"],["santander","santander.com.br"],["nubank","nubank.com.br"],["itau","itau.com.br"],["bradesco","bradesco.com.br"],["caixa","caixa.gov.br"],["bancodobrasil","bb.com.br"],["c6","c6bank.com.br"],["picpay","picpay.com"],["mercadopago","mercadopago.com.br"]],found=domains.find(([name])=>key.includes(name));return found?`https://www.google.com/s2/favicons?domain=${found[1]}&sz=128`:null}
+function bankCardTheme(bank){
+  const key=normalizeText(bank);
+  if(key.includes("santander"))return"santander";
+  if(key.includes("nubank")||key==="nu")return"nubank";
+  if(key.includes("inter"))return"inter";
+  if(key.includes("neon"))return"neon";
+  if(key.includes("itau"))return"itau";
+  if(key.includes("bradesco"))return"bradesco";
+  if(key.includes("caixa"))return"caixa";
+  if(key.includes("bancodobrasil")||key==="bb")return"bb";
+  if(key.includes("c6"))return"c6";
+  if(key.includes("picpay"))return"picpay";
+  if(key.includes("mercadopago"))return"mercadopago";
+  return"custom";
+}
+const maskedCardNumber=id=>`••••  ••••  ••••  ${String(id||"0000").replace(/[^a-z0-9]/gi,"").slice(-4).toUpperCase().padStart(4,"0")}`;
 function CardsModule({ owner, notify }) {
   const [cards, setCards] = useState([]),
     [purchases, setPurchases] = useState([]),
@@ -1879,19 +1896,29 @@ function CardsModule({ owner, notify }) {
       <div className="cards-grid">
         {cards.map((c) => (
           <button
-            className="credit-card"
-            style={{ background: `linear-gradient(135deg,${c.color},#071c3a)` }}
+            className={`credit-card bank-card bank-${bankCardTheme(c.bank)}`}
+            style={{"--card-custom":c.color||"#6445ed"}}
             key={c.id}
             onClick={()=>setSelectedCard(c)}
           >
-            {c.logo_url?<img className="card-bank-logo" src={c.logo_url} alt={`Logo ${c.bank}`} onError={e=>e.currentTarget.style.display="none"}/>:<CreditCard />}
-            <small>{c.bank}</small>
-            <h3>{c.name}</h3>
-            <strong>Limite {money(Number(c.credit_limit))}</strong>
-            <span>
-              Fecha dia {c.closing_day} · vence dia {c.due_day}
-            </span>
-            <em>Ver histórico <ChevronRight/></em>
+            <span className="bank-card-shine"/>
+            <div className="bank-card-top">
+              <span className="bank-card-brand">
+                {c.logo_url?<img className="card-bank-logo" src={c.logo_url} alt={`Logo ${c.bank}`} onError={e=>e.currentTarget.style.display="none"}/>:<CreditCard />}
+                <b>{c.bank}</b>
+              </span>
+              <Wifi className="contactless"/>
+            </div>
+            <span className="bank-card-chip" aria-hidden="true"><i/><i/><i/></span>
+            <strong className="bank-card-number">{maskedCardNumber(c.id)}</strong>
+            <div className="bank-card-bottom">
+              <span><small>NOME DO CARTÃO</small><b>{c.name}</b></span>
+              <span><small>VENCIMENTO</small><b>Dia {c.due_day}</b></span>
+            </div>
+            <div className="bank-card-meta">
+              <span>Limite {money(Number(c.credit_limit))}</span>
+              <em>Ver histórico <ChevronRight/></em>
+            </div>
           </button>
         ))}
         {!cards.length && <EmptyState text="Nenhum cartão cadastrado." />}
