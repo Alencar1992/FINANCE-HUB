@@ -59,6 +59,7 @@ import {
 } from "lucide-react";
 import "./styles.css";
 import "./premium.css";
+import "./liquid.css";
 import { supabase } from "./lib/supabase";
 import ExpenseElimination from "./ExpenseElimination";
 
@@ -355,6 +356,12 @@ function FinanceApp({ owner }) {
         </button>{profileMenu&&<div className="profile-popover"><button onClick={()=>{setPage("Configurações");setProfileMenu(false)}}><Settings/>Configurações</button><button className="logout" onClick={async()=>{const{data:{user}}=await supabase.auth.getUser();if(user?.is_anonymous){setPage("Configurações");setProfileMenu(false);return notify("Vincule e-mail e senha antes de sair, para não perder o acesso aos dados.")}await supabase.auth.signOut();location.reload()}}><ArrowDownLeft/>Sair</button></div>}</div>
       </aside>
       {menu && <div className="scrim" onClick={() => setMenu(false)} />}
+      <nav className="mobile-bottom-nav" aria-label="Navegação principal no celular">
+        {visibleNav.slice(0,2).map(([n,I,label])=><button key={n} className={page===n?"active":""} onClick={()=>setPage(n)}><I/><span>{label||n}</span></button>)}
+        <button className="mobile-bottom-add" onClick={()=>setModal("transaction")} aria-label="Nova movimentação"><Plus/></button>
+        {visibleNav.slice(2,3).map(([n,I,label])=><button key={n} className={page===n?"active":""} onClick={()=>setPage(n)}><I/><span>{label||n}</span></button>)}
+        <button onClick={()=>setMenu(true)}><Menu/><span>Mais</span></button>
+      </nav>
       <main>
         <header>
           <div className="hello">
