@@ -1,6 +1,6 @@
 /* Finance Hub Liquid Glass — transformação visual premium */
 :root{
-  color-scheme:dark;
+  color-scheme:light;
   --surface:#0d2038;--surface-soft:#102640;--bg:#030a18;--text:#f4f7ff;
   --muted:#91a4bf;--border:#ffffff1c;--nav:#07162d;--violet:#8b5cf6;
   --violet2:#a78bfa;--teal:#36d993;--red:#ff5f76;--amber:#fbbf45;
@@ -9,8 +9,8 @@
   --glass-border:1px solid #a9cfff30;
   --glow:0 24px 80px #0009,0 0 0 1px #ffffff0a,0 0 42px #5740d516;
 }
-body{background:#030a18}
-.app,.app.dark{
+body{background:#edf4fb}
+.app.dark{
   --surface:#0d2038;--surface-soft:#102640;--bg:#030a18;--text:#f4f7ff;
   --muted:#91a4bf;--border:#ffffff1c;color-scheme:dark;
   background:
@@ -131,7 +131,7 @@ header{
   .stats{grid-template-columns:repeat(2,1fr)!important}.main-grid,.lower-grid{grid-template-columns:1fr!important}
 }
 @media(max-width:760px){
-  .app,.app.dark{padding-bottom:82px}.app:before{background-size:32px 32px}
+  .app{padding-bottom:82px}.app:before{background-size:32px 32px}
   main,.sidebar-collapsed main{margin:0;width:100%;padding:10px 10px 0}
   header{top:10px;height:62px;margin-bottom:14px;border-radius:17px;padding:0 13px}
   .hello h1{font-size:16px}.hello p{display:none}.mobile-menu{display:none!important}
@@ -157,3 +157,50 @@ header{
   .page-actions{grid-template-columns:1fr!important}.page-actions>button{width:100%}
   .onboarding{padding:24px 13px 90px!important}.onboarding:before{inset:10px;border-radius:24px}.onboard-card{border-radius:24px!important}
 }
+
+/* Liquid Glass claro — superfícies translúcidas e leitura confortável */
+.app:not(.dark){
+  --surface:#ffffffc7;--surface-soft:#f7fbffd1;--bg:#edf4fb;--text:#122038;
+  --muted:#607089;--border:#59749129;--nav:#071b35;--violet:#6845ec;
+  --glass:linear-gradient(145deg,#ffffffc9,#f5faff9e);
+  --glass-soft:linear-gradient(145deg,#ffffffc4,#eef6fcc2);
+  --glass-border:1px solid #ffffffd1;--glow:0 22px 62px #34516c20,0 0 0 1px #718ba216,inset 0 1px #fff;
+  color-scheme:light;color:var(--text);
+  background:
+    radial-gradient(circle at 79% 5%,#9d7cff2c 0,transparent 29rem),
+    radial-gradient(circle at 14% 78%,#36d9b021 0,transparent 31rem),
+    linear-gradient(145deg,#eaf3fb,#f8fbff 48%,#edf6fb);
+}
+.app:not(.dark):before{background-image:linear-gradient(#41617d08 1px,transparent 1px),linear-gradient(90deg,#41617d08 1px,transparent 1px)}
+.app:not(.dark) .sidebar{background:linear-gradient(165deg,#0d2a4bdc,#071c36df);border-color:#d9ebff42;box-shadow:0 28px 72px #18354f38,inset 0 1px #ffffff28;backdrop-filter:blur(28px) saturate(145%)}
+.app:not(.dark) header{background:linear-gradient(120deg,#ffffffb8,#f5faff9c);border-color:#fff;box-shadow:0 16px 45px #34516c1e,inset 0 1px #fff}
+.app:not(.dark) .hello h1,.app:not(.dark) .panel-title h2,.app:not(.dark) .page-head h2{color:#122038}
+.app:not(.dark) .hello p,.app:not(.dark) .panel-title p,.app:not(.dark) .page-head p{color:#607089!important}
+.app:not(.dark) .head-actions .icon,.app:not(.dark) .salary-trigger{background:#ffffffa8!important;border-color:#718ba22e!important;color:#243652;box-shadow:0 8px 24px #34516c12,inset 0 1px #fff}
+.app:not(.dark) .head-actions .icon:hover,.app:not(.dark) .salary-trigger:hover{background:#fff!important;color:#6845ec;border-color:#8064ea59!important;box-shadow:0 12px 28px #563ec91f}
+.theme-toggle{position:relative;overflow:hidden}.theme-toggle svg{transition:transform .28s ease,opacity .2s ease}.theme-toggle:active svg{transform:rotate(24deg) scale(.88)}
+.app:not(.dark) .balance{background:radial-gradient(circle at 78% 28%,#a989ff3d,transparent 28%),linear-gradient(125deg,#234c76df,#173b63df 58%,#31205edc)!important;box-shadow:0 26px 70px #18395243,inset 0 1px #ffffff45!important}
+.app:not(.dark) .panel,.app:not(.dark) .page-panel,.app:not(.dark) .settings-panel,.app:not(.dark) .inline-form,.app:not(.dark) .expense-list,.app:not(.dark) .streaming-history,
+.app:not(.dark) .debtor-group,.app:not(.dark) .streaming-people>article,.app:not(.dark) .streaming-subscriptions>article,.app:not(.dark) .investment-card,.app:not(.dark) .access-profile{
+  background:var(--glass)!important;border:var(--glass-border)!important;
+  box-shadow:0 20px 52px #34516c1d,inset 0 1px #fff!important;backdrop-filter:blur(25px) saturate(145%);
+}
+.app:not(.dark) .panel:hover{border-color:#fff!important;box-shadow:0 25px 58px #34516c29,inset 0 1px #fff!important}
+.app:not(.dark) .stat{background:var(--glass-soft)!important;border-color:#fff!important;box-shadow:0 17px 42px #34516c18,inset 0 1px #fff!important}
+.app:not(.dark) .stat span{color:#64748b}.app:not(.dark) .stat strong{color:#15233a}.app:not(.dark) .stat small{color:#718096!important}
+.app:not(.dark) .panel-title button,.app:not(.dark) .page-actions>button{background:#ffffffa3!important;border-color:#6b85a12b!important;color:#4330aa;box-shadow:inset 0 1px #fff}
+.app:not(.dark) .alert{background:#ffffff78!important;border-color:#718ba21b!important}.app:not(.dark) .alert:hover{background:#fff!important}
+.app:not(.dark) .movement-row,.app:not(.dark) .dynamic-row,.app:not(.dark) .purchase-row,.app:not(.dark) .debt-line{border-color:#617b9520!important}
+.app:not(.dark) .movement-row:hover,.app:not(.dark) .dynamic-row:hover,.app:not(.dark) .purchase-row:not(.header):hover{background:#ffffff92!important}
+.app:not(.dark) .group-head,.app:not(.dark) .stream-charge-list>div{color:#15233a}
+.app:not(.dark) .inline-form input,.app:not(.dark) .inline-form select,.app:not(.dark) .inline-form textarea,.app:not(.dark) .settings-panel input,.app:not(.dark) .settings-panel select,.app:not(.dark) .settings-panel textarea{
+  background:#ffffffb5!important;border-color:#69829d2c!important;color:#15233a!important;box-shadow:inset 0 1px 4px #34516c0b;
+}
+.app:not(.dark) .inline-form input:focus,.app:not(.dark) .inline-form select:focus,.app:not(.dark) .inline-form textarea:focus,.app:not(.dark) .settings-panel input:focus,.app:not(.dark) .settings-panel select:focus,.app:not(.dark) .settings-panel textarea:focus{background:#fff!important;border-color:#7558e8!important;box-shadow:0 0 0 4px #795cf018!important}
+.app:not(.dark) .setting-row{border-color:#647e9823!important}.app:not(.dark) .settings-category-menu>button{background:#ffffffa1;color:#243652;border-color:#fff;box-shadow:0 10px 28px #34516c12,inset 0 1px #fff}
+.app:not(.dark) .settings-category-menu>button:hover{background:#fff;border-color:#8670e55c}.app:not(.dark) .settings-category-menu button.active{background:linear-gradient(110deg,#7658ed20,#38b9dc16);border-color:#876ee3!important;color:#362799}
+.app:not(.dark) .calendar-day{border-color:#617b9521!important}.app:not(.dark) .calendar-day:hover{background:#fff9}
+.app:not(.dark) .report-grid>div{background:#ffffff8a;border-color:#fff!important}
+.app:not(.dark) .payment-dialog{background:#f9fcffd9;box-shadow:0 30px 90px #18354f42;backdrop-filter:blur(28px)}
+.app:not(.dark) .mobile-bottom-nav{background:linear-gradient(145deg,#ffffffdf,#eef7fbe1);border-color:#fff;box-shadow:0 18px 50px #18354f35,inset 0 1px #fff}
+.app:not(.dark) .mobile-bottom-nav button{color:#6b7c91}.app:not(.dark) .mobile-bottom-nav button.active{color:#5638d2;background:#7658ed12}
