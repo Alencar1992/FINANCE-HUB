@@ -61,6 +61,7 @@ import "./styles.css";
 import "./premium.css";
 import "./liquid.css";
 import "./bank-cards.css";
+import "./finance-orbit.css";
 import { supabase } from "./lib/supabase";
 import ExpenseElimination from "./ExpenseElimination";
 
@@ -143,7 +144,7 @@ function FinanceApp({ owner }) {
   const [page, setPage] = useState("Início"),
     [menu, setMenu] = useState(false),
     [sidebarCollapsed, setSidebarCollapsed] = useState(()=>localStorage.getItem("finance-sidebar-collapsed")==="true"),
-    [dark, setDark] = useState(false),
+    [dark, setDark] = useState(() => localStorage.getItem("finance-theme") === "dark"),
     [modal, setModal] = useState(null),
     [toast, setToast] = useState(""),
     [tx, setTx] = useState([]),
@@ -170,6 +171,10 @@ function FinanceApp({ owner }) {
     dialogResolver.current = null;
     setAppDialog(null);
   };
+  useEffect(() => {
+    localStorage.setItem("finance-theme", dark ? "dark" : "light");
+    document.documentElement.style.colorScheme = dark ? "dark" : "light";
+  }, [dark]);
   useEffect(() => {
     const IDLE_LIMIT = 15 * 60 * 1000;
     let timer;
@@ -386,7 +391,12 @@ function FinanceApp({ owner }) {
           </div>
           <div className="head-actions">
             <button className="salary-trigger" onClick={()=>setModal("salary")}><Banknote/><span><strong>Salário</strong><small>Pagamento, adiantamento e reserva</small></span></button>
-            <button className="icon" onClick={() => setDark(!dark)}>
+            <button
+              className="icon theme-toggle"
+              onClick={() => setDark((value) => !value)}
+              aria-label={dark ? "Ativar tema claro" : "Ativar tema escuro"}
+              title={dark ? "Ativar tema claro" : "Ativar tema escuro"}
+            >
               {dark ? <Sun /> : <Moon />}
             </button>
             <button
@@ -914,14 +924,18 @@ function Dashboard({ owner, setPage, notify, tx }) {
         <div className="panel chart">
           <div className="panel-title">
             <div>
-              <h2>Entradas x Saídas</h2>
-              <p>
-                <i className="dot violet" /> Entradas <i className="dot teal" />{" "}
-                Saídas
-              </p>
+              <h2>Visão financeira</h2>
+              <p>Seu mês em uma leitura circular e interativa.</p>
             </div>
           </div>
-          <BarChart tx={tx} />
+          <FinancialOrbit
+            income={income}
+            expense={expense}
+            balance={balance}
+            receivable={receivable}
+            payable={payable}
+            setPage={setPage}
+          />
         </div>
         <div className="panel pending">
           <div className="panel-title">
@@ -1059,37 +1073,48 @@ function InvestmentsModule({owner,notify}){
   </div>
 }
 
-function BarChart({ tx }) {
-  if (!tx.length)
-    return (
-      <div className="real-empty">
-        <ChartNoAxesCombined />
-        <strong>Gráfico aguardando dados</strong>
-        <span>Cadastre receitas e despesas para visualizar o comparativo.</span>
-      </div>
-    );
-  const max = Math.max(...tx.map((x) => x.value), 1);
+function FinancialOrbit({ income, expense, balance, receivable, payable, setPage }) {
+  const total = Math.max(income + expense, 1);
+  const incomeAngle = Math.round((income / total) * 360);
+  const actions = [
+    [TrendingUp, "Entradas", income, "Movimentações", "income"],
+    [UserRound, "A receber", receivable, "Me devem", "receivable"],
+    [CreditCard, "A pagar", payable, "Eu devo", "payable"],
+    [TrendingDown, "Saídas", expense, "Movimentações", "expense"],
+  ];
   return (
-    <div className="bars">
-      <span className="gridline g1">Maior</span>
-      <span className="gridline g2">Médio</span>
-      <span className="gridline g3">R$ 0</span>
-      {tx
-        .slice(0, 18)
-        .reverse()
-        .map((x) => (
-          <div className="barpair" key={x.id}>
-            {x.type === "in" ? (
-              <i style={{ height: Math.max(8, (x.value / max) * 90) + "%" }} />
-            ) : (
-              <b style={{ height: Math.max(8, (x.value / max) * 70) + "%" }} />
-            )}
-          </div>
+    <div className="finance-orbit-shell">
+      <div className="finance-orbit" style={{ "--income-angle": `${incomeAngle}deg` }}>
+        <div className="orbit-ticks" aria-hidden="true" />
+        <div className="orbit-ring" aria-hidden="true" />
+        <div className="orbit-center">
+          <small>Saldo disponível</small>
+          <strong className={balance < 0 ? "negative" : ""}>{money(balance)}</strong>
+          <span>Visão consolidada do mês</span>
+        </div>
+        {actions.map(([Icon, label, value, destination, position]) => (
+          <button
+            type="button"
+            className={`orbit-action orbit-${position}`}
+            onClick={() => setPage(destination)}
+            aria-label={`Abrir ${label}: ${money(value)}`}
+            key={label}
+          >
+            <Icon />
+            <span>{label}</span>
+            <b>{money(value)}</b>
+          </button>
         ))}
-      <div className="axis">
-        <span>Mais antigas</span>
-        <span>Movimentações cadastradas</span>
-        <span>Mais recentes</span>
+      </div>
+      <div className="orbit-overview">
+        <div>
+          <span>Composição do mês</span>
+          <strong>{incomeAngle}% entradas</strong>
+        </div>
+        <div className="orbit-legend">
+          <span><i className="income" />Entradas <b>{money(income)}</b></span>
+          <span><i className="expense" />Saídas <b>{money(expense)}</b></span>
+        </div>
       </div>
     </div>
   );
@@ -1896,10 +1921,12 @@ function CardsModule({ owner, notify }) {
       <div className="cards-grid">
         {cards.map((c) => (
           <button
+            type="button"
             className={`credit-card bank-card bank-${bankCardTheme(c.bank)}`}
             style={{"--card-custom":c.color||"#6445ed"}}
             key={c.id}
             onClick={()=>setSelectedCard(c)}
+            aria-label={`Abrir resumo do cartão ${c.name}, banco ${c.bank}`}
           >
             <span className="bank-card-shine"/>
             <div className="bank-card-top">
@@ -1917,7 +1944,7 @@ function CardsModule({ owner, notify }) {
             </div>
             <div className="bank-card-meta">
               <span>Limite {money(Number(c.credit_limit))}</span>
-              <em>Ver histórico <ChevronRight/></em>
+              <em>Abrir resumo <ChevronRight/></em>
             </div>
           </button>
         ))}
