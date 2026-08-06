@@ -204,3 +204,17 @@ header{
 .app:not(.dark) .payment-dialog{background:#f9fcffd9;box-shadow:0 30px 90px #18354f42;backdrop-filter:blur(28px)}
 .app:not(.dark) .mobile-bottom-nav{background:linear-gradient(145deg,#ffffffdf,#eef7fbe1);border-color:#fff;box-shadow:0 18px 50px #18354f35,inset 0 1px #fff}
 .app:not(.dark) .mobile-bottom-nav button{color:#6b7c91}.app:not(.dark) .mobile-bottom-nav button.active{color:#5638d2;background:#7658ed12}
+
+
+/* Editor universal de movimentações */
+.movement-unified-editor{display:grid;gap:14px}
+.movement-source-badge{display:flex;flex-direction:column;gap:4px;padding:14px 16px;border:1px solid color-mix(in srgb,var(--violet) 28%,transparent);border-radius:14px;background:color-mix(in srgb,var(--violet) 9%,transparent)}
+.movement-source-badge span{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:800}
+.movement-source-badge strong{font-size:14px;color:var(--text)}
+.movement-source-badge small{font-size:9px;color:var(--muted);line-height:1.45}
+.movement-unified-editor label>small{font-size:9px;color:var(--muted);font-weight:500}
+.movement-unified-editor .fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.movement-unified-editor .movement-editor-actions{position:sticky;bottom:-20px;z-index:2;margin:5px -20px -20px;padding:14px 20px;display:flex;justify-content:flex-end;gap:9px;background:color-mix(in srgb,var(--surface) 92%,transparent);border-top:1px solid var(--border);backdrop-filter:blur(22px)}
+.movement-unified-editor .movement-editor-actions .danger-text{margin-right:auto}
+.app.dark .movement-source-badge{background:#7657f314;border-color:#9c83ff38}
+@media(max-width:760px){.movement-unified-editor .fields{grid-template-columns:1fr}.movement-unified-editor .movement-editor-actions{margin-left:-15px;margin-right:-15px;margin-bottom:-15px;padding:12px 15px;display:grid;grid-template-columns:1fr 1fr}.movement-unified-editor .movement-editor-actions .danger-text{grid-column:1/-1;margin:0}.movement-unified-editor .movement-editor-actions button{width:100%}}
