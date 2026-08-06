@@ -1145,12 +1145,106 @@ function Transactions({ rows, open, onEdit }) {
   );
 }
 function UnifiedMovements({owner,baseRows,open,notify,refresh}){
-  const[linked,setLinked]=useState([]),[editing,setEditing]=useState(null),[editValue,setEditValue]=useState("");
-  useEffect(()=>{(async()=>{const[{data:o},{data:p}]=await Promise.all([supabase.from("obligations").select("*").eq("owner_id",owner.id).neq("status","cancelled"),supabase.from("card_purchases").select("*,cards(name)").eq("owner_id",owner.id)]);setLinked([...(o||[]).map(x=>({id:`o-${x.id}`,name:`${x.counterparty_name} · ${x.description}`,cat:x.direction==='receivable'?'Me devem':'Eu devo',value:Number(x.installment_amount||x.remaining_amount),date:x.next_due_date?new Date(x.next_due_date+'T12:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}):'Sem data',type:x.direction==='receivable'?'in':'out',status:x.status==='paid'?'Quitado':`Parcela ${Math.min((x.paid_installments||0)+1,x.installments||1)}/${x.installments||1}`,editable:false})),...(p||[]).map(x=>({id:`p-${x.id}`,name:`${x.cards?.name} · ${x.description}`,cat:`Cartão · ${x.purchased_by}`,value:Number(x.installment_amount),date:new Date(x.first_due_date+'T12:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}),type:'out',status:x.status==='paid'?'Pago':`Parcela ${Math.min(x.paid_installments+1,x.installment_count)}/${x.installment_count}`,editable:false}))])})()},[owner.id]);
-  async function beginEdit(row){const{data,error}=await supabase.from("transactions").select("*").eq("id",row.id).eq("owner_id",owner.id).single();if(error)return notify("Não foi possível abrir esta movimentação.");setEditing(data);setEditValue(Number(data.total_amount||data.amount).toFixed(2).replace(".",","))}
-  async function saveEdit(e){e.preventDefault();const form=new FormData(e.currentTarget),value=parseBRNumber(editValue);if(!Number.isFinite(value)||value<=0)return notify("Informe um valor válido.");const recurring=form.get("recurring")==="on",status=form.get("status"),{error}=await supabase.from("transactions").update({name:form.get("name"),category:form.get("category"),total_amount:value,amount:value,installment_amount:value,transaction_date:form.get("date"),status,is_recurring:recurring,recurrence_active:recurring&&!['paid','received','cancelled'].includes(status),recurrence_day:recurring?Number(form.get("recurrence_day")):null,notes:form.get("notes")}).eq("id",editing.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível atualizar a movimentação.");setEditing(null);await refresh();notify("Movimentação atualizada.")}
-  async function remove(){const{error}=await supabase.from("transactions").delete().eq("id",editing.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível excluir.");setEditing(null);await refresh();notify("Movimentação excluída.")}
-  return <><Transactions rows={[...baseRows,...linked]} open={open} onEdit={beginEdit}/>{editing&&<Modal title="Editar movimentação" close={()=>setEditing(null)}><form className="form" onSubmit={saveEdit}><label>Descrição<input name="name" defaultValue={editing.name} required/></label><label>Categoria<input name="category" defaultValue={editing.category} required/></label><div className="fields"><label>Valor<input value={editValue} onChange={e=>setEditValue(e.target.value)} inputMode="decimal" required/></label><label>Data<input name="date" type="date" defaultValue={editing.transaction_date} required/></label></div><label>Status<select name="status" defaultValue={editing.status}><option value="pending">Pendente</option><option value={editing.transaction_type==='income'?"received":"paid"}>{editing.transaction_type==='income'?"Recebido":"Pago"}</option><option value="overdue">Vencido</option><option value="cancelled">Cancelado</option></select></label><label className="installment-toggle"><input name="recurring" type="checkbox" defaultChecked={editing.is_recurring}/>Movimentação recorrente mensal</label><label>Dia do vencimento mensal<input name="recurrence_day" type="number" min="1" max="31" defaultValue={editing.recurrence_day||new Date(editing.transaction_date+'T12:00').getDate()}/></label><label>Observações<textarea name="notes" defaultValue={editing.notes||""}/></label><div className="movement-editor-actions"><button type="button" className="danger-text" onClick={remove}>Excluir movimentação</button><button type="button" onClick={()=>setEditing(null)}>Cancelar</button><button className="primary">Salvar alterações</button></div></form></Modal>}</>}
+  const[linked,setLinked]=useState([]),[editing,setEditing]=useState(null),[editValue,setEditValue]=useState(""),[saving,setSaving]=useState(false);
+  const formatDate=value=>value?new Date(value+"T12:00").toLocaleDateString("pt-BR",{day:"2-digit",month:"short"}):"Sem data";
+  async function loadLinked(){
+    const[{data:o,error:oError},{data:p,error:pError},{data:s,error:sError}]=await Promise.all([
+      supabase.from("obligations").select("*").eq("owner_id",owner.id).neq("status","cancelled"),
+      supabase.from("card_purchases").select("*,cards(name,bank)").eq("owner_id",owner.id),
+      supabase.from("subscription_charges").select("*,subscriptions(name)").eq("owner_id",owner.id),
+    ]);
+    if(oError||pError||sError)return notify("Algumas movimentações vinculadas não puderam ser carregadas.");
+    setLinked([
+      ...(o||[]).map(x=>({id:`o-${x.id}`,sourceId:x.id,sourceType:"obligation",sourceLabel:x.direction==="receivable"?"Me devem":"Eu devo",name:`${x.counterparty_name} · ${x.description}`,cat:x.category||(x.direction==="receivable"?"Me devem":"Eu devo"),value:Number(x.installment_amount||x.remaining_amount),date:formatDate(x.next_due_date),type:x.direction==="receivable"?"in":"out",status:x.status==="paid"?"Quitado":x.status==="overdue"?"Vencido":`Parcela ${Math.min((x.paid_installments||0)+1,x.installments||1)}/${x.installments||1}`})),
+      ...(p||[]).map(x=>({id:`p-${x.id}`,sourceId:x.id,sourceType:"card_purchase",sourceLabel:"Cartão de crédito",name:`${x.cards?.name||"Cartão"} · ${x.description}`,cat:`Cartão · ${x.purchased_by}`,value:Number(x.installment_amount),date:formatDate(x.first_due_date),type:"out",status:x.status==="paid"?"Pago":x.status==="cancelled"?"Cancelado":`Parcela ${Math.min((x.paid_installments||0)+1,x.installment_count)}/${x.installment_count}`})),
+      ...(s||[]).map(x=>({id:`s-${x.id}`,sourceId:x.id,sourceType:"subscription_charge",sourceLabel:"Streaming",name:`${x.subscriptions?.name||"Streaming"} · ${x.participant_name}`,cat:"Streaming compartilhado",value:Number(x.amount),date:formatDate(x.due_date),type:"in",status:x.status==="paid"?"Recebido":x.status==="overdue"?"Vencido":x.status==="cancelled"?"Cancelado":"Pendente"})),
+    ]);
+  }
+  useEffect(()=>{loadLinked()},[owner.id]);
+  async function beginEdit(row){
+    const sourceType=row.sourceType||"transaction",table=sourceType==="transaction"?"transactions":sourceType==="obligation"?"obligations":sourceType==="card_purchase"?"card_purchases":"subscription_charges",id=row.sourceId||row.id;
+    let query=supabase.from(table).select(sourceType==="card_purchase"?"*,cards(name,bank)":sourceType==="subscription_charge"?"*,subscriptions(name)":"*").eq("id",id).eq("owner_id",owner.id);
+    const{data,error}=await query.single();
+    if(error)return notify("Não foi possível abrir esta movimentação.");
+    setEditing({...data,sourceType,sourceLabel:row.sourceLabel||"Movimentação manual"});
+    const value=sourceType==="transaction"?Number(data.total_amount||data.amount):sourceType==="obligation"?Number(data.total_amount):sourceType==="card_purchase"?Number(data.total_amount):Number(data.amount);
+    setEditValue(value.toFixed(2).replace(".",","));
+  }
+  async function syncTransactionOrigins(original,payload,value){
+    const{data:events}=await supabase.from("salary_events").select("*").eq("owner_id",owner.id).eq("transaction_id",original.id);
+    for(const event of events||[]){
+      const oldAmount=Number(event.amount||0),delta=value-oldAmount;
+      await supabase.from("salary_events").update({amount:value}).eq("id",event.id).eq("owner_id",owner.id);
+      if(event.investment_id&&delta!==0){
+        const{data:investment}=await supabase.from("investments").select("initial_amount,current_amount").eq("id",event.investment_id).eq("owner_id",owner.id).maybeSingle();
+        if(investment)await supabase.from("investments").update({initial_amount:Math.max(0,Number(investment.initial_amount)+delta),current_amount:Math.max(0,Number(investment.current_amount)+delta),updated_at:new Date().toISOString()}).eq("id",event.investment_id).eq("owner_id",owner.id);
+        const{data:snapshot}=await supabase.from("investment_snapshots").select("*").eq("owner_id",owner.id).eq("investment_id",event.investment_id).eq("reference_month",event.reference_month).maybeSingle();
+        if(snapshot)await supabase.from("investment_snapshots").update({amount:Math.max(0,Number(snapshot.amount)+delta),contribution:Math.max(0,Number(snapshot.contribution)+delta)}).eq("id",snapshot.id).eq("owner_id",owner.id);
+      }
+    }
+    const{data:entries}=await supabase.from("custom_module_entries").select("id,data").eq("owner_id",owner.id);
+    for(const entry of (entries||[]).filter(item=>item.data?._finance?.transactionId===original.id)){
+      const finance=entry.data._finance,nextStatus=["paid","received"].includes(payload.status)?"paid":payload.status;
+      const nextData={...entry.data,_finance:{...finance,amount:value,dueDate:payload.transaction_date,status:nextStatus,direction:payload.transaction_type}};
+      await supabase.from("custom_module_entries").update({data:nextData,updated_at:new Date().toISOString()}).eq("id",entry.id).eq("owner_id",owner.id);
+      if(finance.obligationId)await supabase.from("obligations").update({direction:payload.transaction_type==="income"?"receivable":"payable",description:payload.name,category:payload.category,total_amount:value,remaining_amount:["paid","received"].includes(payload.status)?0:value,installment_amount:value,next_due_date:payload.transaction_date,status:["paid","received"].includes(payload.status)?"paid":payload.status==="overdue"?"overdue":payload.status==="cancelled"?"cancelled":"open",notes:payload.notes,updated_at:new Date().toISOString()}).eq("id",finance.obligationId).eq("owner_id",owner.id);
+    }
+  }
+  async function saveEdit(e){
+    e.preventDefault();if(saving)return;
+    const form=new FormData(e.currentTarget),value=parseBRNumber(editValue);
+    if(!Number.isFinite(value)||value<=0)return notify("Informe um valor válido.");
+    setSaving(true);let error=null;
+    try{
+      if(editing.sourceType==="transaction"){
+        const count=Math.max(1,Number(form.get("installments")||editing.installment_count||1)),monthly=Math.round(value/count*100)/100,recurring=form.get("recurring")==="on",status=form.get("status");
+        const payload={name:String(form.get("name")||"").trim(),category:String(form.get("category")||"Outros").trim(),total_amount:value,amount:monthly,installment_amount:monthly,is_installment:count>1,installment_count:count,transaction_type:form.get("direction"),transaction_date:form.get("date"),status,is_recurring:recurring,recurrence_active:recurring&&!["paid","received","cancelled"].includes(status),recurrence_day:recurring?Number(form.get("recurrence_day")):null,notes:form.get("notes")||null,updated_at:new Date().toISOString()};
+        ({error}=await supabase.from("transactions").update(payload).eq("id",editing.id).eq("owner_id",owner.id));
+        if(!error)await syncTransactionOrigins(editing,payload,value);
+      }else if(editing.sourceType==="obligation"){
+        const count=Math.max(1,Number(form.get("installments")||1)),status=form.get("status"),paidAmount=Math.max(0,Number(editing.total_amount)-Number(editing.remaining_amount)),remaining=status==="paid"?0:Math.max(0,value-paidAmount);
+        const payload={direction:form.get("direction"),counterparty_name:String(form.get("counterparty")||"").trim(),phone:String(form.get("phone")||"").replace(/\D/g,"")||null,description:String(form.get("description")||"").trim(),category:String(form.get("category")||"Outros").trim(),total_amount:value,remaining_amount:remaining,installments:count,is_installment:count>1,installment_amount:Math.round(value/count*100)/100,next_due_date:form.get("date")||null,status,notes:form.get("notes")||null,updated_at:new Date().toISOString()};
+        ({error}=await supabase.from("obligations").update(payload).eq("id",editing.id).eq("owner_id",owner.id));
+        if(!error&&payload.direction==="receivable"&&payload.phone)await supabase.from("debtor_contacts").upsert({owner_id:owner.id,display_name:payload.counterparty_name,normalized_name:normalizeText(payload.counterparty_name),phone:payload.phone,updated_at:new Date().toISOString()},{onConflict:"owner_id,normalized_name"});
+      }else if(editing.sourceType==="card_purchase"){
+        const count=Math.max(1,Number(form.get("installments")||1)),status=form.get("status"),paidInstallments=status==="paid"?count:Math.min(Number(editing.paid_installments||0),count);
+        ({error}=await supabase.from("card_purchases").update({description:String(form.get("description")||"").trim(),purchased_by:String(form.get("counterparty")||"Próprio").trim(),total_amount:value,installment_count:count,installment_amount:Math.round(value/count*100)/100,paid_installments:paidInstallments,first_due_date:form.get("date"),status,paid_at:status==="paid"?(editing.paid_at||new Date().toISOString()):null,updated_at:new Date().toISOString()}).eq("id",editing.id).eq("owner_id",owner.id));
+      }else{
+        const status=form.get("status");
+        ({error}=await supabase.from("subscription_charges").update({participant_name:String(form.get("counterparty")||"").trim(),phone:String(form.get("phone")||"").replace(/\D/g,"")||null,amount:value,due_date:form.get("date"),status,paid_at:status==="paid"?(editing.paid_at||new Date().toISOString()):null,updated_at:new Date().toISOString()}).eq("id",editing.id).eq("owner_id",owner.id));
+      }
+      if(error)return notify(`Não foi possível atualizar: ${error.message||"verifique os dados"}.`);
+      setEditing(null);await Promise.all([refresh(),loadLinked()]);window.dispatchEvent(new Event("finance-data-changed"));notify("Movimentação e módulo de origem atualizados.");
+    }finally{setSaving(false)}
+  }
+  async function remove(){
+    if(saving)return;setSaving(true);
+    try{
+      if(editing.sourceType==="transaction"){
+        const[{data:salary},{data:entries}]=await Promise.all([supabase.from("salary_events").select("id").eq("owner_id",owner.id).eq("transaction_id",editing.id).limit(1),supabase.from("custom_module_entries").select("id,data").eq("owner_id",owner.id)]);
+        const linkedOrigin=Boolean(salary?.length||(entries||[]).some(item=>item.data?._finance?.transactionId===editing.id));
+        if(linkedOrigin){const payload={...editing,status:"cancelled",transaction_date:editing.transaction_date,transaction_type:editing.transaction_type,name:editing.name,category:editing.category,notes:editing.notes};const{error}=await supabase.from("transactions").update({status:"cancelled",recurrence_active:false,updated_at:new Date().toISOString()}).eq("id",editing.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível cancelar a movimentação.");await syncTransactionOrigins(editing,payload,Number(editing.total_amount||editing.amount));notify("Movimentação vinculada cancelada para preservar o histórico.")}else{const{error}=await supabase.from("transactions").delete().eq("id",editing.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível excluir a movimentação.");notify("Movimentação excluída.")}
+      }else{
+        const table=editing.sourceType==="obligation"?"obligations":editing.sourceType==="card_purchase"?"card_purchases":"subscription_charges";
+        const{error}=await supabase.from(table).delete().eq("id",editing.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível excluir este registro.");notify("Registro excluído do módulo de origem.");
+      }
+      setEditing(null);await Promise.all([refresh(),loadLinked()]);window.dispatchEvent(new Event("finance-data-changed"));
+    }finally{setSaving(false)}
+  }
+  const sourceLabel=editing?.sourceLabel||"Movimentação manual",isTransaction=editing?.sourceType==="transaction",isObligation=editing?.sourceType==="obligation",isCard=editing?.sourceType==="card_purchase",isStreaming=editing?.sourceType==="subscription_charge";
+  return <><Transactions rows={[...baseRows,...linked]} open={open} onEdit={beginEdit}/>{editing&&<Modal title="Editar movimentação" close={()=>!saving&&setEditing(null)}><form className="form movement-unified-editor" onSubmit={saveEdit}><div className="movement-source-badge"><span>Origem do lançamento</span><strong>{sourceLabel}</strong><small>As alterações serão refletidas automaticamente na tela de origem.</small></div>
+    {isTransaction&&<><label>Descrição<input name="name" defaultValue={editing.name} required/></label><label>Categoria<input name="category" defaultValue={editing.category} required/></label></>}
+    {(isObligation||isCard||isStreaming)&&<label>{isObligation?"Pessoa ou empresa":isCard?"Responsável pela compra":"Participante"}<input name="counterparty" defaultValue={isObligation?editing.counterparty_name:isCard?editing.purchased_by:editing.participant_name} required/></label>}
+    {(isObligation||isStreaming)&&<label>WhatsApp<input name="phone" defaultValue={editing.phone||""} inputMode="tel" placeholder="5511999999999"/></label>}
+    {(isObligation||isCard)&&<label>Descrição<input name="description" defaultValue={editing.description} required/></label>}
+    {isObligation&&<label>Categoria<input name="category" defaultValue={editing.category||"Outros"} required/></label>}
+    <div className="fields"><label>Valor total<input value={editValue} onChange={e=>setEditValue(e.target.value)} inputMode="decimal" required/></label><label>{isStreaming?"Vencimento":"Data / primeiro vencimento"}<input name="date" type="date" defaultValue={isTransaction?editing.transaction_date:isObligation?editing.next_due_date:isCard?editing.first_due_date:editing.due_date} required/></label></div>
+    {(isTransaction||isObligation||isCard)&&<label>Quantidade de parcelas<input name="installments" type="number" min="1" max="120" defaultValue={isTransaction?editing.installment_count:isObligation?editing.installments:editing.installment_count}/><small>O valor mensal será recalculado automaticamente.</small></label>}
+    {isTransaction&&<label>Tipo financeiro<select name="direction" defaultValue={editing.transaction_type}><option value="income">Receita / entrada</option><option value="expense">Despesa / saída</option></select></label>}{isObligation&&<label>Tipo financeiro<select name="direction" defaultValue={editing.direction}><option value="receivable">Valor a receber</option><option value="payable">Valor a pagar</option></select></label>}
+    <label>Status<select name="status" defaultValue={editing.status}>{isTransaction?<><option value="pending">Pendente</option><option value="received">Recebido</option><option value="paid">Pago</option><option value="overdue">Vencido</option><option value="cancelled">Cancelado</option></>:isObligation?<><option value="open">Em aberto</option><option value="paid">Quitado</option><option value="overdue">Vencido</option><option value="cancelled">Cancelado</option></>:isCard?<><option value="open">Em aberto</option><option value="paid">Pago</option><option value="cancelled">Cancelado</option></>:<><option value="pending">Pendente</option><option value="paid">Pago</option><option value="overdue">Atrasado</option><option value="cancelled">Cancelado</option></>}</select></label>
+    {isTransaction&&<><label className="installment-toggle"><input name="recurring" type="checkbox" defaultChecked={editing.is_recurring}/>Movimentação recorrente mensal</label><label>Dia do vencimento mensal<input name="recurrence_day" type="number" min="1" max="31" defaultValue={editing.recurrence_day||new Date(editing.transaction_date+"T12:00").getDate()}/></label></>}
+    {(isTransaction||isObligation)&&<label>Observações<textarea name="notes" defaultValue={editing.notes||""}/></label>}
+    <div className="movement-editor-actions"><button type="button" className="danger-text" disabled={saving} onClick={remove}>Excluir</button><button type="button" disabled={saving} onClick={()=>setEditing(null)}>Cancelar</button><button className="primary" disabled={saving}>{saving?"Salvando…":"Salvar alterações"}</button></div></form></Modal>}</>}
 
 function DebtPage({ notify }) {
   return (
