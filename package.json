@@ -1,1 +1,26 @@
-{"scripts":{"dev":"vite --host 0.0.0.0","build":"vite build","preview":"vite preview --host 0.0.0.0"},"dependencies":{"@supabase/supabase-js":"^2.57.4","@vitejs/plugin-react":"latest","html2canvas":"^1.4.1","jspdf":"^3.0.3","lucide-react":"latest","react":"latest","react-dom":"latest","vite":"latest"}}
+{
+  "name": "finance-hub",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.114.0",
+    "html2canvas": "1.4.1",
+    "jspdf": "4.2.1",
+    "lucide-react": "1.39.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "6.1.1",
+    "vite": "8.2.2"
+  },
+  "overrides": {
+    "dompurify": "3.4.14"
+  }
+}
