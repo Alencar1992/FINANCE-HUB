@@ -22,4 +22,6 @@ Cada push em `main` executa o workflow de GitHub Pages. Em **Settings → Pages*
 
 ## Segurança
 
-O banco usa Row Level Security. Cada perfil é vinculado a uma sessão anônima do Supabase e só consegue acessar seus próprios registros.
+O banco usa Row Level Security por proprietário. O acesso aos dados exige conta identificada, sessão autenticada e MFA (`aal2`). Identidades anônimas antigas são mantidas apenas para conversão segura da conta, sem alteração do proprietário dos registros.
+
+O plano de validação e rollback das políticas está em [`docs/security/issue-4-validation.md`](docs/security/issue-4-validation.md).
