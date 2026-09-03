@@ -8,13 +8,18 @@ create or replace function public.pay_card_purchases(
   p_purchase_ids uuid[] default null,
   p_pay_all boolean default false
 ) returns integer
-language plpgsql security invoker set search_path=public
+language plpgsql
+security invoker
+set search_path=public
 as $$
 declare affected integer;
 begin
   if p_pay_all then
     update public.card_purchases
-    set paid_installments=installment_count,status='paid',paid_at=now(),updated_at=now()
+    set paid_installments=installment_count,
+        status='paid',
+        paid_at=now(),
+        updated_at=now()
     where owner_id=(select auth.uid()) and card_id=p_card_id and status='open';
   else
     update public.card_purchases
@@ -28,3 +33,4 @@ begin
   get diagnostics affected=row_count;
   return affected;
 end $$;
+grant execute on function public.pay_card_purchases(uuid,uuid[],boolean) to authenticated;

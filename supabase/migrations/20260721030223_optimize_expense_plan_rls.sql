@@ -1,0 +1,4 @@
+drop policy if exists require_named_user_mfa on public.expense_plan_settings;
+drop policy if exists require_named_user_mfa on public.expense_plan_items;
+create policy require_named_user_mfa on public.expense_plan_settings as restrictive for all to authenticated using(coalesce((select auth.jwt())->>'is_anonymous','false')='false' and(select auth.jwt())->>'aal'='aal2') with check(coalesce((select auth.jwt())->>'is_anonymous','false')='false' and(select auth.jwt())->>'aal'='aal2');
+create policy require_named_user_mfa on public.expense_plan_items as restrictive for all to authenticated using(coalesce((select auth.jwt())->>'is_anonymous','false')='false' and(select auth.jwt())->>'aal'='aal2') with check(coalesce((select auth.jwt())->>'is_anonymous','false')='false' and(select auth.jwt())->>'aal'='aal2');
