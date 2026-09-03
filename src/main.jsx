@@ -1156,49 +1156,24 @@ function UnifiedMovements({owner,baseRows,open,notify,refresh}){
     const value=sourceType==="transaction"?Number(data.total_amount||data.amount):sourceType==="obligation"?Number(data.total_amount):sourceType==="card_purchase"?Number(data.total_amount):Number(data.amount);
     setEditValue(value.toFixed(2).replace(".",","));
   }
-  async function syncTransactionOrigins(original,payload,value){
-    const{data:events}=await supabase.from("salary_events").select("*").eq("owner_id",owner.id).eq("transaction_id",original.id);
-    for(const event of events||[]){
-      const oldAmount=Number(event.amount||0),delta=value-oldAmount;
-      await supabase.from("salary_events").update({amount:value}).eq("id",event.id).eq("owner_id",owner.id);
-      if(event.investment_id&&delta!==0){
-        const{data:investment}=await supabase.from("investments").select("initial_amount,current_amount").eq("id",event.investment_id).eq("owner_id",owner.id).maybeSingle();
-        if(investment)await supabase.from("investments").update({initial_amount:Math.max(0,Number(investment.initial_amount)+delta),current_amount:Math.max(0,Number(investment.current_amount)+delta),updated_at:new Date().toISOString()}).eq("id",event.investment_id).eq("owner_id",owner.id);
-        const{data:snapshot}=await supabase.from("investment_snapshots").select("*").eq("owner_id",owner.id).eq("investment_id",event.investment_id).eq("reference_month",event.reference_month).maybeSingle();
-        if(snapshot)await supabase.from("investment_snapshots").update({amount:Math.max(0,Number(snapshot.amount)+delta),contribution:Math.max(0,Number(snapshot.contribution)+delta)}).eq("id",snapshot.id).eq("owner_id",owner.id);
-      }
-    }
-    const{data:entries}=await supabase.from("custom_module_entries").select("id,data").eq("owner_id",owner.id);
-    for(const entry of (entries||[]).filter(item=>item.data?._finance?.transactionId===original.id)){
-      const finance=entry.data._finance,nextStatus=["paid","received"].includes(payload.status)?"paid":payload.status;
-      const nextData={...entry.data,_finance:{...finance,amount:value,dueDate:payload.transaction_date,status:nextStatus,direction:payload.transaction_type}};
-      await supabase.from("custom_module_entries").update({data:nextData,updated_at:new Date().toISOString()}).eq("id",entry.id).eq("owner_id",owner.id);
-      if(finance.obligationId)await supabase.from("obligations").update({direction:payload.transaction_type==="income"?"receivable":"payable",description:payload.name,category:payload.category,total_amount:value,remaining_amount:["paid","received"].includes(payload.status)?0:value,installment_amount:value,next_due_date:payload.transaction_date,status:["paid","received"].includes(payload.status)?"paid":payload.status==="overdue"?"overdue":payload.status==="cancelled"?"cancelled":"open",notes:payload.notes,updated_at:new Date().toISOString()}).eq("id",finance.obligationId).eq("owner_id",owner.id);
-    }
-  }
   async function saveEdit(e){
     e.preventDefault();if(saving)return;
     const form=new FormData(e.currentTarget),value=parseBRNumber(editValue);
     if(!Number.isFinite(value)||value<=0)return notify("Informe um valor válido.");
-    setSaving(true);let error=null;
+    setSaving(true);
     try{
+      let payload;
       if(editing.sourceType==="transaction"){
-        const count=Math.max(1,Number(form.get("installments")||editing.installment_count||1)),monthly=Math.round(value/count*100)/100,recurring=form.get("recurring")==="on",status=form.get("status");
-        const payload={name:String(form.get("name")||"").trim(),category:String(form.get("category")||"Outros").trim(),total_amount:value,amount:monthly,installment_amount:monthly,is_installment:count>1,installment_count:count,transaction_type:form.get("direction"),transaction_date:form.get("date"),status,is_recurring:recurring,recurrence_active:recurring&&!["paid","received","cancelled"].includes(status),recurrence_day:recurring?Number(form.get("recurrence_day")):null,notes:form.get("notes")||null,updated_at:new Date().toISOString()};
-        ({error}=await supabase.from("transactions").update(payload).eq("id",editing.id).eq("owner_id",owner.id));
-        if(!error)await syncTransactionOrigins(editing,payload,value);
+        const recurring=form.get("recurring")==="on";
+        payload={name:String(form.get("name")||"").trim(),category:String(form.get("category")||"Outros").trim(),total_amount:value,installment_count:Math.max(1,Number(form.get("installments")||editing.installment_count||1)),transaction_type:form.get("direction"),transaction_date:form.get("date"),status:form.get("status"),is_recurring:recurring,recurrence_day:recurring?Number(form.get("recurrence_day")):null,notes:form.get("notes")||null};
       }else if(editing.sourceType==="obligation"){
-        const count=Math.max(1,Number(form.get("installments")||1)),status=form.get("status"),paidAmount=Math.max(0,Number(editing.total_amount)-Number(editing.remaining_amount)),remaining=status==="paid"?0:Math.max(0,value-paidAmount);
-        const payload={direction:form.get("direction"),counterparty_name:String(form.get("counterparty")||"").trim(),phone:String(form.get("phone")||"").replace(/\D/g,"")||null,description:String(form.get("description")||"").trim(),category:String(form.get("category")||"Outros").trim(),total_amount:value,remaining_amount:remaining,installments:count,is_installment:count>1,installment_amount:Math.round(value/count*100)/100,next_due_date:form.get("date")||null,status,notes:form.get("notes")||null,updated_at:new Date().toISOString()};
-        ({error}=await supabase.from("obligations").update(payload).eq("id",editing.id).eq("owner_id",owner.id));
-        if(!error&&payload.direction==="receivable"&&payload.phone)await supabase.from("debtor_contacts").upsert({owner_id:owner.id,display_name:payload.counterparty_name,normalized_name:normalizeText(payload.counterparty_name),phone:payload.phone,updated_at:new Date().toISOString()},{onConflict:"owner_id,normalized_name"});
+        payload={direction:form.get("direction"),counterparty_name:String(form.get("counterparty")||"").trim(),phone:String(form.get("phone")||"").replace(/\D/g,"")||null,description:String(form.get("description")||"").trim(),category:String(form.get("category")||"Outros").trim(),total_amount:value,installments:Math.max(1,Number(form.get("installments")||1)),next_due_date:form.get("date")||null,status:form.get("status"),notes:form.get("notes")||null};
       }else if(editing.sourceType==="card_purchase"){
-        const count=Math.max(1,Number(form.get("installments")||1)),status=form.get("status"),paidInstallments=status==="paid"?count:Math.min(Number(editing.paid_installments||0),count);
-        ({error}=await supabase.from("card_purchases").update({description:String(form.get("description")||"").trim(),purchased_by:String(form.get("counterparty")||"Próprio").trim(),total_amount:value,installment_count:count,installment_amount:Math.round(value/count*100)/100,paid_installments:paidInstallments,first_due_date:form.get("date"),status,paid_at:status==="paid"?(editing.paid_at||new Date().toISOString()):null,updated_at:new Date().toISOString()}).eq("id",editing.id).eq("owner_id",owner.id));
+        payload={description:String(form.get("description")||"").trim(),purchased_by:String(form.get("counterparty")||"Próprio").trim(),total_amount:value,installment_count:Math.max(1,Number(form.get("installments")||1)),first_due_date:form.get("date"),status:form.get("status")};
       }else{
-        const status=form.get("status");
-        ({error}=await supabase.from("subscription_charges").update({participant_name:String(form.get("counterparty")||"").trim(),phone:String(form.get("phone")||"").replace(/\D/g,"")||null,amount:value,due_date:form.get("date"),status,paid_at:status==="paid"?(editing.paid_at||new Date().toISOString()):null,updated_at:new Date().toISOString()}).eq("id",editing.id).eq("owner_id",owner.id));
+        payload={participant_name:String(form.get("counterparty")||"").trim(),phone:String(form.get("phone")||"").replace(/\D/g,"")||null,amount:value,due_date:form.get("date"),status:form.get("status")};
       }
+      const{error}=await supabase.rpc("update_financial_movement",{p_owner_id:owner.id,p_source_type:editing.sourceType,p_source_id:editing.id,p_payload:payload});
       if(error)return notify(`Não foi possível atualizar: ${error.message||"verifique os dados"}.`);
       setEditing(null);await Promise.all([refresh(),loadLinked()]);window.dispatchEvent(new Event("finance-data-changed"));notify("Movimentação e módulo de origem atualizados.");
     }finally{setSaving(false)}
@@ -1206,15 +1181,10 @@ function UnifiedMovements({owner,baseRows,open,notify,refresh}){
   async function remove(){
     if(saving)return;setSaving(true);
     try{
-      if(editing.sourceType==="transaction"){
-        const[{data:salary},{data:entries}]=await Promise.all([supabase.from("salary_events").select("id").eq("owner_id",owner.id).eq("transaction_id",editing.id).limit(1),supabase.from("custom_module_entries").select("id,data").eq("owner_id",owner.id)]);
-        const linkedOrigin=Boolean(salary?.length||(entries||[]).some(item=>item.data?._finance?.transactionId===editing.id));
-        if(linkedOrigin){const payload={...editing,status:"cancelled",transaction_date:editing.transaction_date,transaction_type:editing.transaction_type,name:editing.name,category:editing.category,notes:editing.notes};const{error}=await supabase.from("transactions").update({status:"cancelled",recurrence_active:false,updated_at:new Date().toISOString()}).eq("id",editing.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível cancelar a movimentação.");await syncTransactionOrigins(editing,payload,Number(editing.total_amount||editing.amount));notify("Movimentação vinculada cancelada para preservar o histórico.")}else{const{error}=await supabase.from("transactions").delete().eq("id",editing.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível excluir a movimentação.");notify("Movimentação excluída.")}
-      }else{
-        const table=editing.sourceType==="obligation"?"obligations":editing.sourceType==="card_purchase"?"card_purchases":"subscription_charges";
-        const{error}=await supabase.from(table).delete().eq("id",editing.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível excluir este registro.");notify("Registro excluído do módulo de origem.");
-      }
+      const{data,error}=await supabase.rpc("remove_financial_movement",{p_owner_id:owner.id,p_source_type:editing.sourceType,p_source_id:editing.id});
+      if(error)return notify("Não foi possível remover esta movimentação com segurança.");
       setEditing(null);await Promise.all([refresh(),loadLinked()]);window.dispatchEvent(new Event("finance-data-changed"));
+      notify(data?.status==="already_removed"?"A movimentação já estava removida.":"Movimentação e vínculos removidos com segurança.");
     }finally{setSaving(false)}
   }
   const sourceLabel=editing?.sourceLabel||"Movimentação manual",isTransaction=editing?.sourceType==="transaction",isObligation=editing?.sourceType==="obligation",isCard=editing?.sourceType==="card_purchase",isStreaming=editing?.sourceType==="subscription_charge";
