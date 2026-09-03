@@ -32,16 +32,17 @@ const expectedFiles = [
   '20260722192359_streaming_access_beta.sql',
   '20260722192525_cleanup_deleted_custom_modules.sql',
   '20260903050045_harden_auth_mfa_rls.sql',
+  '20260903182636_atomic_salary_processing.sql',
 ];
 const expected = {
-  migrations: 28,
+  migrations: 29,
   tables: 24,
   columns: 273,
   constraints: 127,
-  indexes: 56,
+  indexes: 58,
   policies: 51,
   triggers: 22,
-  functions: 11,
+  functions: 12,
 };
 
 const bootstrap = `
@@ -55,6 +56,10 @@ const bootstrap = `
     as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
   create function auth.jwt() returns jsonb language sql stable
     as $$ select coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb, '{}'::jsonb) $$;
+
+  grant usage on schema auth to anon, authenticated;
+  grant execute on function auth.uid() to anon, authenticated;
+  grant execute on function auth.jwt() to anon, authenticated;
 
   create schema storage;
   create table storage.buckets (
@@ -147,6 +152,22 @@ if (differences.length) {
   throw new Error(`Schema reconstruído diverge da produção:\n${differences.join('\n')}`);
 }
 
+const salaryRpcSecurity = await db.query(`
+  select
+    not p.prosecdef as security_invoker,
+    p.proconfig @> array['search_path=pg_catalog, public'] as fixed_search_path,
+    has_function_privilege('authenticated', p.oid, 'EXECUTE') as authenticated_execute,
+    not has_function_privilege('anon', p.oid, 'EXECUTE') as anon_blocked,
+    not has_function_privilege('public', p.oid, 'EXECUTE') as public_blocked,
+    pg_get_functiondef(p.oid) ilike '%for update%' as serialized
+  from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'public' and p.proname = 'process_salary_for_owner'
+`);
+if (!salaryRpcSecurity.rows[0] || Object.values(salaryRpcSecurity.rows[0]).some(value => value !== true)) {
+  throw new Error('Contrato de segurança ou serialização da RPC salarial está incorreto.');
+}
+
 const ownerA = '00000000-0000-4000-8000-000000000001';
 const ownerB = '00000000-0000-4000-8000-000000000002';
 await db.exec(`insert into auth.users(id) values ('${ownerA}'), ('${ownerB}');`);
@@ -180,8 +201,75 @@ try {
 }
 if (!aal1Blocked) throw new Error('A política restritiva não bloqueou uma escrita com AAL1.');
 await db.exec('reset role;');
+await db.exec(`insert into public.owners(id,name) values ('${ownerB}','Usuário de rollback');`);
+
+// Valida a operação salarial atômica: resultado completo, repetição e autorização.
+await db.exec(`
+  insert into public.salary_settings (
+    owner_id, salary_amount, salary_day, salary_enabled,
+    savings_enabled, savings_mode, savings_value, savings_recurring, savings_on_salary
+  ) values ('${ownerA}', 5000, 1, true, true, 'percentage', 10, true, true);
+  set role authenticated;
+  select set_config('request.jwt.claim.sub', '${ownerA}', false);
+  select set_config('request.jwt.claims', '{"sub":"${ownerA}","aal":"aal2","is_anonymous":false}', false);
+`);
+const firstSalaryRun = await scalar(db, `select public.process_salary_for_owner('${ownerA}')`);
+const repeatedSalaryRun = await scalar(db, `select public.process_salary_for_owner('${ownerA}')`);
+if (firstSalaryRun !== 2 || repeatedSalaryRun !== 0) {
+  throw new Error('Processamento salarial não foi idempotente.');
+}
+const salaryEvents = await scalar(db, `select count(*) from public.salary_events where owner_id='${ownerA}'`);
+const salaryTransactions = await scalar(db, `select count(*) from public.transactions where owner_id='${ownerA}' and category='Salário'`);
+const savingsTransactions = await scalar(db, `select count(*) from public.transactions where owner_id='${ownerA}' and category='Investimentos'`);
+const savingsContribution = await scalar(db, `select contribution from public.investment_snapshots where owner_id='${ownerA}'`);
+if (salaryEvents !== 2 || salaryTransactions !== 1 || savingsTransactions !== 1 || savingsContribution !== 500) {
+  throw new Error('Evento, movimentação, reserva e snapshot salarial ficaram inconsistentes.');
+}
+
+await db.exec(`
+  select set_config('request.jwt.claim.sub', '${ownerB}', false);
+  select set_config('request.jwt.claims', '{"sub":"${ownerB}","aal":"aal2","is_anonymous":false}', false);
+`);
+let crossOwnerSalaryBlocked = false;
+try {
+  await db.exec(`select public.process_salary_for_owner('${ownerA}')`);
+} catch {
+  crossOwnerSalaryBlocked = true;
+}
+if (!crossOwnerSalaryBlocked) throw new Error('RPC salarial permitiu processar outro proprietário.');
+await db.exec('reset role;');
+
+// Força falha na segunda tabela e confirma rollback completo da transação.
+await db.exec(`
+  insert into public.salary_settings (owner_id, salary_amount, salary_day, salary_enabled)
+  values ('${ownerB}', 1000, 1, true);
+  create function private.fail_salary_transaction_test() returns trigger language plpgsql as $$
+  begin
+    if new.owner_id = '${ownerB}' then raise exception 'forced transaction failure'; end if;
+    return new;
+  end $$;
+  create trigger fail_salary_transaction_test before insert on public.transactions
+  for each row execute function private.fail_salary_transaction_test();
+  set role authenticated;
+  select set_config('request.jwt.claim.sub', '${ownerB}', false);
+  select set_config('request.jwt.claims', '{"sub":"${ownerB}","aal":"aal2","is_anonymous":false}', false);
+`);
+let salaryFailureRaised = false;
+try {
+  await db.exec(`select public.process_salary_for_owner('${ownerB}')`);
+} catch {
+  salaryFailureRaised = true;
+}
+await db.exec('reset role; drop trigger fail_salary_transaction_test on public.transactions; drop function private.fail_salary_transaction_test();');
+if (!salaryFailureRaised) throw new Error('Teste não conseguiu simular falha intermediária.');
+const rolledBackEvents = await scalar(db, `select count(*) from public.salary_events where owner_id='${ownerB}'`);
+const rolledBackTransactions = await scalar(db, `select count(*) from public.transactions where owner_id='${ownerB}'`);
+if (rolledBackEvents !== 0 || rolledBackTransactions !== 0) {
+  throw new Error('Falha intermediária deixou dados salariais parciais.');
+}
 
 console.table(actual);
-console.log('OK: as 28 migrations reconstruíram o catálogo público equivalente à produção.');
+console.log('OK: as 29 migrations reconstruíram o catálogo público esperado.');
 console.log('OK: smoke CRUD, isolamento por proprietário e exigência AAL2 validados.');
+console.log('OK: salário/reserva atômicos, idempotentes e com rollback completo validados.');
 await db.close();
