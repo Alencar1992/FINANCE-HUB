@@ -33,16 +33,17 @@ const expectedFiles = [
   '20260722192525_cleanup_deleted_custom_modules.sql',
   '20260903050045_harden_auth_mfa_rls.sql',
   '20260903182636_atomic_salary_processing.sql',
+  '20260903190230_atomic_universal_movement_edit.sql',
 ];
 const expected = {
-  migrations: 29,
+  migrations: 30,
   tables: 24,
   columns: 273,
   constraints: 127,
   indexes: 58,
   policies: 51,
   triggers: 22,
-  functions: 12,
+  functions: 14,
 };
 
 const bootstrap = `
@@ -225,6 +226,19 @@ const savingsContribution = await scalar(db, `select contribution from public.in
 if (salaryEvents !== 2 || salaryTransactions !== 1 || savingsTransactions !== 1 || savingsContribution !== 500) {
   throw new Error('Evento, movimentação, reserva e snapshot salarial ficaram inconsistentes.');
 }
+const savingsTransactionResult = await db.query(`
+  select transaction_id from public.salary_events where owner_id='${ownerA}' and event_type='salary_savings'
+`);
+const savingsTransactionId = savingsTransactionResult.rows[0]?.transaction_id;
+if (!savingsTransactionId) throw new Error('Aporte salarial ficou sem movimentação vinculada.');
+const savingsEditPayload = '{"total_amount":600,"status":"paid","transaction_type":"expense"}';
+await db.exec(`select public.update_financial_movement('${ownerA}','transaction','${savingsTransactionId}','${savingsEditPayload}'::jsonb)`);
+await db.exec(`select public.update_financial_movement('${ownerA}','transaction','${savingsTransactionId}','${savingsEditPayload}'::jsonb)`);
+const editedSavingsInvestment = await scalar(db, `select current_amount from public.investments where owner_id='${ownerA}' and name='Reserva de Poupança'`);
+const editedSavingsSnapshot = await scalar(db, `select contribution from public.investment_snapshots where owner_id='${ownerA}'`);
+if (editedSavingsInvestment !== 600 || editedSavingsSnapshot !== 600) {
+  throw new Error('Edição repetida do aporte alterou investimento ou snapshot mais de uma vez.');
+}
 
 await db.exec(`
   select set_config('request.jwt.claim.sub', '${ownerB}', false);
@@ -268,8 +282,114 @@ if (rolledBackEvents !== 0 || rolledBackTransactions !== 0) {
   throw new Error('Falha intermediária deixou dados salariais parciais.');
 }
 
+// Valida a edição universal: sincronização, repetição, rollback e isolamento.
+const moduleId = '10000000-0000-4000-8000-000000000001';
+const transactionId = '20000000-0000-4000-8000-000000000001';
+const obligationId = '30000000-0000-4000-8000-000000000001';
+const entryId = '40000000-0000-4000-8000-000000000001';
+await db.exec(`
+  insert into public.custom_modules(id,owner_id,name) values ('${moduleId}','${ownerA}','Teste transacional');
+  insert into public.transactions(id,owner_id,name,category,amount,total_amount,installment_amount,transaction_type,transaction_date,status)
+  values ('${transactionId}','${ownerA}','Origem antiga','Outros',100,100,100,'expense','2026-09-01','pending');
+  insert into public.obligations(id,owner_id,direction,counterparty_name,description,total_amount,remaining_amount,installment_amount,next_due_date)
+  values ('${obligationId}','${ownerA}','payable','Fornecedor','Origem antiga',100,100,100,'2026-09-01');
+  insert into public.custom_module_entries(id,owner_id,module_id,data) values (
+    '${entryId}','${ownerA}','${moduleId}',
+    '{"_finance":{"transactionId":"${transactionId}","obligationId":"${obligationId}","amount":100,"direction":"expense","status":"pending"}}'
+  );
+  set role authenticated;
+  select set_config('request.jwt.claim.sub', '${ownerA}', false);
+  select set_config('request.jwt.claims', '{"sub":"${ownerA}","aal":"aal2","is_anonymous":false}', false);
+`);
+const editPayload = `{
+  "name":"Origem atualizada","category":"Serviços","total_amount":240,
+  "installment_count":1,"transaction_type":"expense","transaction_date":"2026-09-10",
+  "status":"pending","is_recurring":false,"notes":"Edição atômica"
+}`;
+await db.exec(`select public.update_financial_movement('${ownerA}','transaction','${transactionId}','${editPayload}'::jsonb)`);
+await db.exec(`select public.update_financial_movement('${ownerA}','transaction','${transactionId}','${editPayload}'::jsonb)`);
+const editedTransaction = await scalar(db, `select total_amount from public.transactions where id='${transactionId}'`);
+const editedObligation = await scalar(db, `select total_amount from public.obligations where id='${obligationId}'`);
+const editedEntry = await scalar(db, `select (data #>> '{_finance,amount}')::numeric from public.custom_module_entries where id='${entryId}'`);
+if (editedTransaction !== 240 || editedObligation !== 240 || editedEntry !== 240) {
+  throw new Error('Edição universal repetida deixou origem e vínculos divergentes.');
+}
+
+await db.exec(`
+  reset role;
+  create function private.fail_universal_edit_test() returns trigger language plpgsql as $$
+  begin
+    if new.id = '${obligationId}' then raise exception 'forced linked update failure'; end if;
+    return new;
+  end $$;
+  create trigger fail_universal_edit_test before update on public.obligations
+  for each row execute function private.fail_universal_edit_test();
+  set role authenticated;
+  select set_config('request.jwt.claim.sub', '${ownerA}', false);
+  select set_config('request.jwt.claims', '{"sub":"${ownerA}","aal":"aal2","is_anonymous":false}', false);
+`);
+let universalFailureRaised = false;
+try {
+  await db.exec(`select public.update_financial_movement('${ownerA}','transaction','${transactionId}',
+    '{"total_amount":300}'::jsonb)`);
+} catch {
+  universalFailureRaised = true;
+}
+await db.exec('reset role; drop trigger fail_universal_edit_test on public.obligations; drop function private.fail_universal_edit_test();');
+if (!universalFailureRaised) throw new Error('Teste não conseguiu simular falha na origem vinculada.');
+const transactionAfterRollback = await scalar(db, `select total_amount from public.transactions where id='${transactionId}'`);
+const entryAfterRollback = await scalar(db, `select (data #>> '{_finance,amount}')::numeric from public.custom_module_entries where id='${entryId}'`);
+if (transactionAfterRollback !== 240 || entryAfterRollback !== 240) {
+  throw new Error('Falha vinculada não desfez integralmente a edição universal.');
+}
+
+await db.exec(`
+  set role authenticated;
+  select set_config('request.jwt.claim.sub', '${ownerB}', false);
+  select set_config('request.jwt.claims', '{"sub":"${ownerB}","aal":"aal2","is_anonymous":false}', false);
+`);
+let crossOwnerEditBlocked = false;
+try {
+  await db.exec(`select public.update_financial_movement('${ownerA}','transaction','${transactionId}','{}'::jsonb)`);
+} catch {
+  crossOwnerEditBlocked = true;
+}
+if (!crossOwnerEditBlocked) throw new Error('RPC universal permitiu editar outro proprietário.');
+
+await db.exec(`
+  select set_config('request.jwt.claim.sub', '${ownerA}', false);
+  select set_config('request.jwt.claims', '{"sub":"${ownerA}","aal":"aal2","is_anonymous":false}', false);
+  select public.remove_financial_movement('${ownerA}','transaction','${transactionId}');
+  select public.remove_financial_movement('${ownerA}','transaction','${transactionId}');
+`);
+const cancelledSet = await scalar(db, `
+  select count(*) from (
+    select status from public.transactions where id='${transactionId}' and status='cancelled'
+    union all select status from public.obligations where id='${obligationId}' and status='cancelled'
+    union all select data #>> '{_finance,status}' from public.custom_module_entries where id='${entryId}' and data #>> '{_finance,status}'='cancelled'
+  ) linked
+`);
+if (cancelledSet !== 3) throw new Error('Remoção universal deixou vínculo financeiro órfão.');
+await db.exec('reset role;');
+
+const universalRpcSecurity = await db.query(`
+  select p.proname, not p.prosecdef as security_invoker,
+    p.proconfig @> array['search_path=pg_catalog, public'] as fixed_search_path,
+    has_function_privilege('authenticated', p.oid, 'EXECUTE') as authenticated_execute,
+    not has_function_privilege('anon', p.oid, 'EXECUTE') as anon_blocked,
+    not has_function_privilege('public', p.oid, 'EXECUTE') as public_blocked,
+    pg_get_functiondef(p.oid) ilike '%for update%' as serialized
+  from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+  where n.nspname='public' and p.proname in ('update_financial_movement','remove_financial_movement')
+`);
+if (universalRpcSecurity.rows.length !== 2 || universalRpcSecurity.rows.some(row =>
+  Object.entries(row).some(([key, value]) => key !== 'proname' && value !== true))) {
+  throw new Error('Contrato de segurança das RPCs universais está incorreto.');
+}
+
 console.table(actual);
-console.log('OK: as 29 migrations reconstruíram o catálogo público esperado.');
+console.log('OK: as 30 migrations reconstruíram o catálogo público esperado.');
 console.log('OK: smoke CRUD, isolamento por proprietário e exigência AAL2 validados.');
 console.log('OK: salário/reserva atômicos, idempotentes e com rollback completo validados.');
+console.log('OK: edição universal sincronizada, idempotente e com rollback completo validada.');
 await db.close();
