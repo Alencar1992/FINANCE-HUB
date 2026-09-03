@@ -22,7 +22,13 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
+      - name: Lint source
+        run: npm run lint
       - run: npm run test:schema
+      - name: Test financial rules and UI safeguards
+        run: npm test
       - run: npm run build
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

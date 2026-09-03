@@ -64,6 +64,19 @@ import "./bank-cards.css";
 import "./finance-orbit.css";
 import { supabase } from "./lib/supabase";
 import ExpenseElimination from "./ExpenseElimination";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import {
+  calculateCardPayment,
+  calculateSavings,
+  dueDateFor,
+  installmentAmount,
+  money,
+  monthStart,
+  normalizeText,
+  parseBRNumber,
+  simulateDebt,
+  summarizeCashflow,
+} from "./lib/finance";
 
 const APP_URL = "https://alencar1992.github.io/FINANCE-HUB/";
 const authErrorPt = (error, fallback = "Não foi possível concluir. Tente novamente.") => {
@@ -79,23 +92,9 @@ const authErrorPt = (error, fallback = "Não foi possível concluir. Tente novam
   return fallback;
 };
 
-const money = (n) =>
-  n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const exportDownload=(blob,name)=>{const link=document.createElement("a");link.href=URL.createObjectURL(blob);link.download=name;document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(link.href),3000)};
 const exportCell=value=>typeof value==="object"&&value!==null?JSON.stringify(value):value??"";
 const exportCsv=rows=>{const headers=[...new Set(rows.flatMap(row=>Object.keys(row)))],quote=value=>`"${String(exportCell(value)).replaceAll('"','""')}"`;return [headers.map(quote).join(";"),...rows.map(row=>headers.map(key=>quote(row[key])).join(";"))].join("\n")};
-const parseBRNumber = (value) => {
-  const raw = String(value ?? "")
-    .trim()
-    .replace(/\s/g, "")
-    .replace(/R\$/gi, "")
-    .replace(/%/g, "")
-    .replace(/[^0-9,.-]/g, "");
-  if (!raw) return Number.NaN;
-  return Number(raw.includes(",") ? raw.replace(/\./g, "").replace(",", ".") : raw);
-};
-const monthStart=(date=new Date())=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-01`;
-const dueDateFor=(day,date=new Date())=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(Math.min(Number(day),new Date(date.getFullYear(),date.getMonth()+1,0).getDate())).padStart(2,"0")}`;
 const categoryRules=[
   ["Alimentação",/mercado|supermercado|padaria|restaurante|lanche|ifood|comida|açougue/i],
   ["Moradia",/aluguel|condom[ií]nio|energia|luz|[aá]gua|g[aá]s|iptu/i],
@@ -108,7 +107,6 @@ const categoryRules=[
   ["Renda extra",/venda|freelancer|comiss[aã]o|renda extra|servi[cç]o/i],
 ];
 function suggestCategory(name,type){const found=categoryRules.find(([,rule])=>rule.test(String(name)));return found?{category:found[0],confidence:.9,source:"rules"}:{category:type==="income"?"Outras receitas":"Outras despesas",confidence:.45,source:"rules"}}
-const normalizeText=value=>String(value||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]/g,"");
 async function addSavingsContribution(ownerId,amount,label){
   if(amount<=0)return null;
   let{data:investment}=await supabase.from("investments").select("*").eq("owner_id",ownerId).ilike("name","Reserva de Poupança").eq("active",true).maybeSingle();
@@ -120,7 +118,7 @@ async function processSalarySchedule(ownerId){
   const{data:settings}=await supabase.from("salary_settings").select("*").eq("owner_id",ownerId).maybeSingle();if(!settings)return 0;
   const now=new Date(),today=now.getDate(),reference=monthStart(now);let created=0;
   const processPayment=async(kind,enabled,amount,day)=>{if(!enabled||Number(amount)<=0||today<Math.min(Number(day),new Date(now.getFullYear(),now.getMonth()+1,0).getDate()))return;const{data:exists}=await supabase.from("salary_events").select("id").eq("owner_id",ownerId).eq("reference_month",reference).eq("event_type",kind).maybeSingle();if(exists)return;const{data:event,error:eventError}=await supabase.from("salary_events").insert({owner_id:ownerId,reference_month:reference,event_type:kind,amount}).select().single();if(eventError)return;const label=kind==="salary"?"Salário":"Adiantamento salarial",{data:transaction,error}=await supabase.from("transactions").insert({owner_id:ownerId,name:`${label} · ${reference.slice(0,7)}`,category:"Salário",amount:Number(amount),total_amount:Number(amount),installment_amount:Number(amount),transaction_type:"income",transaction_date:dueDateFor(day,now),status:"received",is_installment:false,installment_count:1,installment_number:1,notes:"Inserido automaticamente pela central de salário."}).select("id").single();if(error){await supabase.from("salary_events").delete().eq("id",event.id);return}await supabase.from("salary_events").update({transaction_id:transaction.id}).eq("id",event.id);created++;
-    const shouldSave=settings.savings_enabled&&settings.savings_recurring&&((kind==="salary"&&settings.savings_on_salary)||(kind==="advance"&&settings.savings_on_advance));if(!shouldSave)return;const savingType=`${kind}_savings`,{data:savingExists}=await supabase.from("salary_events").select("id").eq("owner_id",ownerId).eq("reference_month",reference).eq("event_type",savingType).maybeSingle();if(savingExists)return;const savingAmount=Math.round((settings.savings_mode==="percentage"?Number(amount)*Number(settings.savings_value)/100:Number(settings.savings_value))*100)/100;if(savingAmount<=0)return;try{const result=await addSavingsContribution(ownerId,savingAmount,label);await supabase.from("salary_events").insert({owner_id:ownerId,reference_month:reference,event_type:savingType,amount:savingAmount,transaction_id:result.transactionId,investment_id:result.investmentId});created++}catch(error){console.error("Falha no aporte automático",error)}
+    const shouldSave=settings.savings_enabled&&settings.savings_recurring&&((kind==="salary"&&settings.savings_on_salary)||(kind==="advance"&&settings.savings_on_advance));if(!shouldSave)return;const savingType=`${kind}_savings`,{data:savingExists}=await supabase.from("salary_events").select("id").eq("owner_id",ownerId).eq("reference_month",reference).eq("event_type",savingType).maybeSingle();if(savingExists)return;const savingAmount=calculateSavings(amount,settings.savings_mode,settings.savings_value);if(savingAmount<=0)return;try{const result=await addSavingsContribution(ownerId,savingAmount,label);await supabase.from("salary_events").insert({owner_id:ownerId,reference_month:reference,event_type:savingType,amount:savingAmount,transaction_id:result.transactionId,investment_id:result.investmentId});created++}catch(error){console.error("Falha no aporte automático",error)}
   };
   await processPayment("salary",settings.salary_enabled,settings.salary_amount,settings.salary_day);await processPayment("advance",settings.advance_enabled,settings.advance_amount,settings.advance_day);if(created)window.dispatchEvent(new Event("finance-data-changed"));return created
 }
@@ -261,7 +259,7 @@ function FinanceApp({ owner }) {
     const f = new FormData(e.currentTarget),
       total = parseBRNumber(f.get("total")),
       count = Number(f.get("installments") || 1),
-      monthly = Math.round((total / count) * 100) / 100;
+      monthly = installmentAmount(total, count);
     const type=f.get("type") === "in" ? "income" : "expense",
       typedCategory=String(f.get("cat")||"").trim(),
       suggestion=suggestCategory(f.get("name"),type),
@@ -844,12 +842,9 @@ function Dashboard({ owner, setPage, notify, tx }) {
       setSubscriptions(s || []);
     })();
   }, [owner.id]);
-  const income = tx
-      .filter((x) => x.type === "in")
-      .reduce((a, x) => a + x.value, 0),
-    expense = tx
-      .filter((x) => x.type === "out")
-      .reduce((a, x) => a + x.value, 0),
+  const cashflow = summarizeCashflow(tx),
+    income = cashflow.income,
+    expense = cashflow.expense,
     receivable = obligations
       .filter((x) => x.direction === "receivable")
       .reduce((a, x) => a + Number(x.remaining_amount), 0),
@@ -862,7 +857,7 @@ function Dashboard({ owner, setPage, notify, tx }) {
     ),
     subscriptionsDue = subscriptions.reduce((a, x) => a + Number(x.amount || 0), 0),
     payable = payableObligations + currentCardInstallments + subscriptionsDue,
-    balance = income - expense;
+    balance = cashflow.balance;
   return (
     <>
       <section className="balance-row">
@@ -2008,10 +2003,10 @@ function CardsModule({ owner, notify }) {
 }
 
 function CardDetail({card,purchases,back,reload,notify}){
-  const[dialog,setDialog]=useState(null),[selected,setSelected]=useState([]),open=purchases.filter(p=>p.status==='open'),currentTotal=open.reduce((a,p)=>a+Number(p.installment_amount),0),remainingTotal=open.reduce((a,p)=>a+Math.max(0,Number(p.total_amount)-Number(p.paid_installments)*Number(p.installment_amount)),0);
+  const[dialog,setDialog]=useState(null),[selected,setSelected]=useState([]),open=purchases.filter(p=>p.status==='open'),totals=calculateCardPayment(purchases),currentTotal=totals.current,remainingTotal=totals.remaining;
   function toggle(id){setSelected(v=>v.includes(id)?v.filter(x=>x!==id):[...v,id])}
   async function pay(all){const{data,error}=await supabase.rpc('pay_card_purchases',{p_card_id:card.id,p_purchase_ids:all?null:selected,p_pay_all:all});if(error)return notify('Não foi possível registrar o pagamento.');setDialog(null);setSelected([]);await reload();notify(all?`Cartão quitado: ${data} compra(s).`:`Pagamento parcial registrado em ${data} compra(s).`)}
-  return <div className="card-detail"><button className="back-button" onClick={back}><ArrowDownLeft/>Voltar aos cartões</button><div className="card-detail-head"><div><span>{card.bank}</span><h2>{card.name}</h2><p>Fecha dia {card.closing_day} · vence dia {card.due_day}</p></div><div><small>Parcela do mês</small><strong>{money(currentTotal)}</strong><span>Saldo total {money(remainingTotal)}</span></div><button className="primary" disabled={!open.length} onClick={()=>setDialog('choose')}><Check/>Pagar</button></div><div className="page-panel"><div className="panel-title"><div><h2>Histórico de compras</h2><p>{purchases.length} compra(s) registradas</p></div></div><div className="purchase-history"><div className="purchase-row header"><span>Compra</span><span>Responsável</span><span>Valor total</span><span>Parcelas</span><span>Parcela atual</span><span>Status</span></div>{purchases.map(p=><div className="purchase-row" key={p.id}><div><strong>{p.description}</strong><small>{new Date(p.first_due_date+'T12:00').toLocaleDateString('pt-BR')}</small></div><span>{p.purchased_by}</span><b>{money(Number(p.total_amount))}</b><span>{Math.min(p.paid_installments+1,p.installment_count)}/{p.installment_count}</span><b>{money(Number(p.installment_amount))}</b><i className={p.status}>{p.status==='paid'?'Pago':'Em aberto'}</i></div>)}{!purchases.length&&<EmptyState text="Nenhuma compra neste cartão."/>}</div></div>{dialog&&<div className="payment-dialog-bg"><div className="payment-dialog"><div className="modal-head"><div><h2>Como deseja pagar?</h2><p>{dialog==='choose'?'Escolha entre quitar o cartão ou selecionar parcelas.':'Selecione as compras que serão pagas neste mês.'}</p></div><button onClick={()=>{setDialog(null);setSelected([])}}><X/></button></div>{dialog==='choose'?<div className="payment-options"><button onClick={()=>setDialog('total')}><ShieldCheck/><strong>Pagar total</strong><span>Quitar todas as compras em débito · {money(remainingTotal)}</span></button><button onClick={()=>setDialog('partial')}><FileText/><strong>Pagamento parcial</strong><span>Escolher as parcelas atuais que serão pagas</span></button></div>:dialog==='total'?<div className="confirm-total"><AlertTriangle/><h3>Confirmar quitação total?</h3><p>Todas as {open.length} compras em aberto serão marcadas como pagas. Valor pendente: <strong>{money(remainingTotal)}</strong>.</p><button className="primary" onClick={()=>pay(true)}>Confirmar pagamento total</button></div>:<><div className="partial-list">{open.map(p=><label key={p.id}><input type="checkbox" checked={selected.includes(p.id)} onChange={()=>toggle(p.id)}/><span><strong>{p.description}</strong><small>{p.purchased_by} · parcela {p.paid_installments+1}/{p.installment_count}</small></span><b>{money(Number(p.installment_amount))}</b></label>)}</div><div className="partial-footer"><span>Selecionado: <strong>{money(open.filter(p=>selected.includes(p.id)).reduce((a,p)=>a+Number(p.installment_amount),0))}</strong></span><button className="primary" disabled={!selected.length} onClick={()=>pay(false)}>Pagar selecionados</button></div></>}</div></div>}</div>
+  return <div className="card-detail"><button className="back-button" onClick={back}><ArrowDownLeft/>Voltar aos cartões</button><div className="card-detail-head"><div><span>{card.bank}</span><h2>{card.name}</h2><p>Fecha dia {card.closing_day} · vence dia {card.due_day}</p></div><div><small>Parcela do mês</small><strong>{money(currentTotal)}</strong><span>Saldo total {money(remainingTotal)}</span></div><button className="primary" disabled={!open.length} onClick={()=>setDialog('choose')}><Check/>Pagar</button></div><div className="page-panel"><div className="panel-title"><div><h2>Histórico de compras</h2><p>{purchases.length} compra(s) registradas</p></div></div><div className="purchase-history"><div className="purchase-row header"><span>Compra</span><span>Responsável</span><span>Valor total</span><span>Parcelas</span><span>Parcela atual</span><span>Status</span></div>{purchases.map(p=><div className="purchase-row" key={p.id}><div><strong>{p.description}</strong><small>{new Date(p.first_due_date+'T12:00').toLocaleDateString('pt-BR')}</small></div><span>{p.purchased_by}</span><b>{money(Number(p.total_amount))}</b><span>{Math.min(p.paid_installments+1,p.installment_count)}/{p.installment_count}</span><b>{money(Number(p.installment_amount))}</b><i className={p.status}>{p.status==='paid'?'Pago':'Em aberto'}</i></div>)}{!purchases.length&&<EmptyState text="Nenhuma compra neste cartão."/>}</div></div>{dialog&&<div className="payment-dialog-bg"><div className="payment-dialog"><div className="modal-head"><div><h2>Como deseja pagar?</h2><p>{dialog==='choose'?'Escolha entre quitar o cartão ou selecionar parcelas.':'Selecione as compras que serão pagas neste mês.'}</p></div><button onClick={()=>{setDialog(null);setSelected([])}}><X/></button></div>{dialog==='choose'?<div className="payment-options"><button onClick={()=>setDialog('total')}><ShieldCheck/><strong>Pagar total</strong><span>Quitar todas as compras em débito · {money(remainingTotal)}</span></button><button onClick={()=>setDialog('partial')}><FileText/><strong>Pagamento parcial</strong><span>Escolher as parcelas atuais que serão pagas</span></button></div>:dialog==='total'?<div className="confirm-total"><AlertTriangle/><h3>Confirmar quitação total?</h3><p>Todas as {open.length} compras em aberto serão marcadas como pagas. Valor pendente: <strong>{money(remainingTotal)}</strong>.</p><button className="primary" onClick={()=>pay(true)}>Confirmar pagamento total</button></div>:<><div className="partial-list">{open.map(p=><label key={p.id}><input type="checkbox" checked={selected.includes(p.id)} onChange={()=>toggle(p.id)}/><span><strong>{p.description}</strong><small>{p.purchased_by} · parcela {p.paid_installments+1}/{p.installment_count}</small></span><b>{money(Number(p.installment_amount))}</b></label>)}</div><div className="partial-footer"><span>Selecionado: <strong>{money(calculateCardPayment(purchases,selected).current)}</strong></span><button className="primary" disabled={!selected.length} onClick={()=>pay(false)}>Pagar selecionados</button></div></>}</div></div>}</div>
 }
 
 function CalendarModule({ owner, tx }) {
@@ -2153,7 +2148,7 @@ function FinancialIntelligence({owner,tx,notify,refresh,ask}){
   async function reviewDuplicate(item,status){const{error}=await supabase.from("transactions").update({duplicate_review_status:status}).eq("id",item.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível registrar a revisão.");await refresh();notify(status==="dismissed"?"Alerta descartado.":"Duplicidade confirmada; o lançamento foi mantido para sua decisão.")}
   async function saveGoal(e){e.preventDefault();const f=new FormData(e.currentTarget),target=parseBRNumber(f.get("target")),currentAmount=parseBRNumber(f.get("current"))||0;if(!Number.isFinite(target)||target<=0)return notify("Informe um valor de meta válido.");if(currentAmount<0)return notify("O valor reservado não pode ser negativo.");const payload={name:String(f.get("name")||"").trim(),target_amount:target,current_amount:Math.min(currentAmount,target),target_date:f.get("date"),priority:f.get("priority"),notes:f.get("notes")||null,status:currentAmount>=target?"completed":"active",updated_at:new Date().toISOString()},query=editingGoal?supabase.from("financial_goals").update(payload).eq("id",editingGoal.id).eq("owner_id",owner.id):supabase.from("financial_goals").insert({...payload,owner_id:owner.id}),{error}=await query;if(error)return notify(editingGoal?"Não foi possível atualizar a meta.":"Não foi possível salvar a meta.");const wasEditing=Boolean(editingGoal);setGoalOpen(false);setEditingGoal(null);await load();notify(wasEditing?"Meta atualizada com sucesso.":"Meta financeira criada.")}function openNewGoal(){setEditingGoal(null);setGoalOpen(true)}function openEditGoal(goal){setEditingGoal(goal);setGoalOpen(true)}function closeGoalForm(){setGoalOpen(false);setEditingGoal(null)}async function deleteGoal(){if(!editingGoal)return;const accepted=await ask({kind:"confirm",tone:"danger",title:"Excluir meta?",message:`A meta “${editingGoal.name}” será excluída permanentemente. Esta ação não poderá ser desfeita.`,confirmLabel:"Excluir meta"});if(!accepted)return;const{error}=await supabase.from("financial_goals").delete().eq("id",editingGoal.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível excluir a meta.");closeGoalForm();await load();notify("Meta excluída com sucesso.")}
   async function contribute(goal){const value=await ask({kind:"input",title:"Adicionar progresso à meta",message:`Informe quanto foi reservado para “${goal.name}”.`,value:"",confirmLabel:"Adicionar à meta"});if(value==null)return;const amount=parseBRNumber(value);if(!Number.isFinite(amount)||amount<=0)return notify("Informe um valor válido.");const next=Math.min(Number(goal.target_amount),Number(goal.current_amount)+amount),{error}=await supabase.from("financial_goals").update({current_amount:next,status:next>=Number(goal.target_amount)?"completed":"active",updated_at:new Date().toISOString()}).eq("id",goal.id).eq("owner_id",owner.id);if(error)return notify("Não foi possível atualizar a meta.");await load();notify(next>=Number(goal.target_amount)?"Parabéns! Meta concluída.":"Progresso da meta atualizado.")}
-  function simulate(e){e.preventDefault();const f=new FormData(e.currentTarget),principal=parseBRNumber(f.get("balance")),rate=(parseBRNumber(f.get("rate"))||0)/100,payment=parseBRNumber(f.get("payment")),extra=parseBRNumber(f.get("extra"))||0;if(!principal||!payment||payment+extra<=principal*rate)return notify("A parcela precisa ser maior que os juros do mês.");const run=extraValue=>{let balance=principal,months=0,interest=0;while(balance>.01&&months<1200){const fee=balance*rate;interest+=fee;balance=Math.max(0,balance+fee-payment-extraValue);months++}return{months,interest,total:principal+interest}};const base=run(0),accelerated=run(extra);setSimulation({base,accelerated,saved:base.interest-accelerated.interest})}
+  function simulate(e){e.preventDefault();const f=new FormData(e.currentTarget),principal=parseBRNumber(f.get("balance")),rate=(parseBRNumber(f.get("rate"))||0)/100,payment=parseBRNumber(f.get("payment")),extra=parseBRNumber(f.get("extra"))||0,base=simulateDebt({principal,monthlyRate:rate,payment}),accelerated=simulateDebt({principal,monthlyRate:rate,payment,extra});if(!base||!accelerated)return notify("A parcela precisa ser maior que os juros do mês.");setSimulation({base,accelerated,saved:base.interest-accelerated.interest})}
   const tabs=[["visao","Visão inteligente",BrainCircuit],["duplicidades","Duplicidades",CopyCheck],["quitacao","Quitação",Calculator],["metas","Metas",Target]];
   return <div className="intelligence-page"><div className="page-head"><div><h2>Inteligência financeira</h2><p>Análises seguras para decidir melhor, sem alterar seus dados automaticamente.</p></div><span className="intelligence-badge"><ShieldCheck/>Dados protegidos por RLS</span></div><div className="intelligence-tabs">{tabs.map(([key,label,Icon])=><button key={key} className={tab===key?"active":""} onClick={()=>setTab(key)}><Icon/>{label}{key==="duplicidades"&&flagged.length>0?<b>{flagged.length}</b>:null}</button>)}</div>
   {tab==="visao"&&<><div className="intelligence-summary"><article><Tags/><span><small>Classificação automática</small><strong>{classified.length} lançamento(s)</strong><p>Regras locais; Gemini poderá interpretar descrições ambíguas.</p></span></article><article><CopyCheck/><span><small>Possíveis duplicidades</small><strong>{flagged.length}</strong><p>Mesmo valor, tipo e data próxima exigem sua revisão.</p></span></article><article><CircleDollarSign/><span><small>Resultado comparado</small><strong className={difference>=0?"positive":"negative"}>{difference>=0?"+ ":""}{money(difference)}</strong><p>Diferença do resultado atual contra o mês anterior.</p></span></article><article><Target/><span><small>Metas ativas</small><strong>{goals.filter(g=>g.status==="active").length}</strong><p>Acompanhamento e valor mensal necessário calculados localmente.</p></span></article></div></>}
@@ -2361,4 +2356,4 @@ function AppDialog({ dialog, onAnswer }) {
   </div>;
 }
 
-createRoot(document.getElementById("root")).render(<AuthGate />);
+createRoot(document.getElementById("root")).render(<ErrorBoundary><AuthGate /></ErrorBoundary>);
