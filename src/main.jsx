@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Home,
@@ -78,6 +78,7 @@ import {
   getProfileAssetSignedUrl,
   runSalarySchedule,
 } from "./features/app-shell/app-shell-service";
+import { UnifiedMovements } from "./features/movements/UnifiedMovements";
 import {
   calculateCardPayment,
   calculateSavings,
@@ -139,10 +140,10 @@ function FinanceApp({ owner }) {
     [backupNotice,setBackupNotice]=useState(null),
     [avatarUrl,setAvatarUrl]=useState("");
   const dialogResolver=useRef(null);
-  const notify = (m) => {
+  const notify = useCallback((m) => {
     setToast(m);
     setTimeout(() => setToast(""), 2600);
-  };
+  }, []);
   const ask = (options) => new Promise((resolve) => {
     dialogResolver.current = resolve;
     setAppDialog(options);
@@ -912,143 +913,6 @@ function FinancialOrbit({ income, expense, balance, receivable, payable, setPage
     </div>
   );
 }
-
-function Transactions({ rows, open, onEdit }) {
-  const [filter, setFilter] = useState("all");
-  const shown = rows.filter((x) => filter === "all" || x.type === filter);
-  return (
-    <div className="page-panel">
-      <div className="page-head">
-        <div>
-          <h2>Movimentações</h2>
-          <p>Acompanhe todas as entradas e saídas.</p>
-        </div>
-        {open && (
-          <button className="primary" onClick={open}>
-            <Plus />
-            Adicionar
-          </button>
-        )}
-      </div>
-      <div className="filters">
-        <button
-          className={filter === "all" ? "selected" : ""}
-          onClick={() => setFilter("all")}
-        >
-          Todas
-        </button>
-        <button
-          className={filter === "in" ? "selected" : ""}
-          onClick={() => setFilter("in")}
-        >
-          Receitas
-        </button>
-        <button
-          className={filter === "out" ? "selected" : ""}
-          onClick={() => setFilter("out")}
-        >
-          Despesas
-        </button>
-      </div>
-      <div className="table">
-        {shown.map((r) => (
-          <div className="tr" key={r.id}>
-            <i className={r.type === "in" ? "txicon in" : "txicon out"}>
-              {r.type === "in" ? <TrendingUp /> : <TrendingDown />}
-            </i>
-            <div>
-              <strong>{r.name}</strong>
-              <span>{r.cat}</span>
-            </div>
-            <span>{r.date}</span>
-            <span>{r.status}</span>
-            <b className={r.type === "in" ? "pos" : "neg"}>
-              {r.type === "in" ? "+ " : "- "}
-              {money(r.value)}
-            </b>
-            <button aria-label={r.editable===false?"Gerenciado pelo módulo de origem":"Editar movimentação"} disabled={r.editable===false} onClick={()=>onEdit?.(r)} title={r.editable===false?"Edite no módulo de origem":"Editar movimentação"}>
-              <MoreHorizontal />
-            </button>
-          </div>
-        ))}
-        {!shown.length && (
-          <EmptyState text="Nenhuma movimentação neste filtro." />
-        )}
-      </div>
-    </div>
-  );
-}
-function UnifiedMovements({owner,baseRows,open,notify,refresh}){
-  const[linked,setLinked]=useState([]),[editing,setEditing]=useState(null),[editValue,setEditValue]=useState(""),[saving,setSaving]=useState(false);
-  const formatDate=value=>value?new Date(value+"T12:00").toLocaleDateString("pt-BR",{day:"2-digit",month:"short"}):"Sem data";
-  async function loadLinked(){
-    const[{data:o,error:oError},{data:p,error:pError},{data:s,error:sError}]=await Promise.all([
-      supabase.from("obligations").select("*").eq("owner_id",owner.id).neq("status","cancelled"),
-      supabase.from("card_purchases").select("*,cards(name,bank)").eq("owner_id",owner.id),
-      supabase.from("subscription_charges").select("*,subscriptions(name)").eq("owner_id",owner.id),
-    ]);
-    if(oError||pError||sError)return notify("Algumas movimentações vinculadas não puderam ser carregadas.");
-    setLinked([
-      ...(o||[]).map(x=>({id:`o-${x.id}`,sourceId:x.id,sourceType:"obligation",sourceLabel:x.direction==="receivable"?"Me devem":"Eu devo",name:`${x.counterparty_name} · ${x.description}`,cat:x.category||(x.direction==="receivable"?"Me devem":"Eu devo"),value:Number(x.installment_amount||x.remaining_amount),date:formatDate(x.next_due_date),type:x.direction==="receivable"?"in":"out",status:x.status==="paid"?"Quitado":x.status==="overdue"?"Vencido":`Parcela ${Math.min((x.paid_installments||0)+1,x.installments||1)}/${x.installments||1}`})),
-      ...(p||[]).map(x=>({id:`p-${x.id}`,sourceId:x.id,sourceType:"card_purchase",sourceLabel:"Cartão de crédito",name:`${x.cards?.name||"Cartão"} · ${x.description}`,cat:`Cartão · ${x.purchased_by}`,value:Number(x.installment_amount),date:formatDate(x.first_due_date),type:"out",status:x.status==="paid"?"Pago":x.status==="cancelled"?"Cancelado":`Parcela ${Math.min((x.paid_installments||0)+1,x.installment_count)}/${x.installment_count}`})),
-      ...(s||[]).map(x=>({id:`s-${x.id}`,sourceId:x.id,sourceType:"subscription_charge",sourceLabel:"Streaming",name:`${x.subscriptions?.name||"Streaming"} · ${x.participant_name}`,cat:"Streaming compartilhado",value:Number(x.amount),date:formatDate(x.due_date),type:"in",status:x.status==="paid"?"Recebido":x.status==="overdue"?"Vencido":x.status==="cancelled"?"Cancelado":"Pendente"})),
-    ]);
-  }
-  useEffect(()=>{loadLinked()},[owner.id]);
-  async function beginEdit(row){
-    const sourceType=row.sourceType||"transaction",table=sourceType==="transaction"?"transactions":sourceType==="obligation"?"obligations":sourceType==="card_purchase"?"card_purchases":"subscription_charges",id=row.sourceId||row.id;
-    let query=supabase.from(table).select(sourceType==="card_purchase"?"*,cards(name,bank)":sourceType==="subscription_charge"?"*,subscriptions(name)":"*").eq("id",id).eq("owner_id",owner.id);
-    const{data,error}=await query.single();
-    if(error)return notify("Não foi possível abrir esta movimentação.");
-    setEditing({...data,sourceType,sourceLabel:row.sourceLabel||"Movimentação manual"});
-    const value=sourceType==="transaction"?Number(data.total_amount||data.amount):sourceType==="obligation"?Number(data.total_amount):sourceType==="card_purchase"?Number(data.total_amount):Number(data.amount);
-    setEditValue(value.toFixed(2).replace(".",","));
-  }
-  async function saveEdit(e){
-    e.preventDefault();if(saving)return;
-    const form=new FormData(e.currentTarget),value=parseBRNumber(editValue);
-    if(!Number.isFinite(value)||value<=0)return notify("Informe um valor válido.");
-    setSaving(true);
-    try{
-      let payload;
-      if(editing.sourceType==="transaction"){
-        const recurring=form.get("recurring")==="on";
-        payload={name:String(form.get("name")||"").trim(),category:String(form.get("category")||"Outros").trim(),total_amount:value,installment_count:Math.max(1,Number(form.get("installments")||editing.installment_count||1)),transaction_type:form.get("direction"),transaction_date:form.get("date"),status:form.get("status"),is_recurring:recurring,recurrence_day:recurring?Number(form.get("recurrence_day")):null,notes:form.get("notes")||null};
-      }else if(editing.sourceType==="obligation"){
-        payload={direction:form.get("direction"),counterparty_name:String(form.get("counterparty")||"").trim(),phone:String(form.get("phone")||"").replace(/\D/g,"")||null,description:String(form.get("description")||"").trim(),category:String(form.get("category")||"Outros").trim(),total_amount:value,installments:Math.max(1,Number(form.get("installments")||1)),next_due_date:form.get("date")||null,status:form.get("status"),notes:form.get("notes")||null};
-      }else if(editing.sourceType==="card_purchase"){
-        payload={description:String(form.get("description")||"").trim(),purchased_by:String(form.get("counterparty")||"Próprio").trim(),total_amount:value,installment_count:Math.max(1,Number(form.get("installments")||1)),first_due_date:form.get("date"),status:form.get("status")};
-      }else{
-        payload={participant_name:String(form.get("counterparty")||"").trim(),phone:String(form.get("phone")||"").replace(/\D/g,"")||null,amount:value,due_date:form.get("date"),status:form.get("status")};
-      }
-      const{error}=await supabase.rpc("update_financial_movement",{p_owner_id:owner.id,p_source_type:editing.sourceType,p_source_id:editing.id,p_payload:payload});
-      if(error)return notify(`Não foi possível atualizar: ${error.message||"verifique os dados"}.`);
-      setEditing(null);await Promise.all([refresh(),loadLinked()]);window.dispatchEvent(new Event("finance-data-changed"));notify("Movimentação e módulo de origem atualizados.");
-    }finally{setSaving(false)}
-  }
-  async function remove(){
-    if(saving)return;setSaving(true);
-    try{
-      const{data,error}=await supabase.rpc("remove_financial_movement",{p_owner_id:owner.id,p_source_type:editing.sourceType,p_source_id:editing.id});
-      if(error)return notify("Não foi possível remover esta movimentação com segurança.");
-      setEditing(null);await Promise.all([refresh(),loadLinked()]);window.dispatchEvent(new Event("finance-data-changed"));
-      notify(data?.status==="already_removed"?"A movimentação já estava removida.":"Movimentação e vínculos removidos com segurança.");
-    }finally{setSaving(false)}
-  }
-  const sourceLabel=editing?.sourceLabel||"Movimentação manual",isTransaction=editing?.sourceType==="transaction",isObligation=editing?.sourceType==="obligation",isCard=editing?.sourceType==="card_purchase",isStreaming=editing?.sourceType==="subscription_charge";
-  return <><Transactions rows={[...baseRows,...linked]} open={open} onEdit={beginEdit}/>{editing&&<Modal title="Editar movimentação" close={()=>!saving&&setEditing(null)}><form className="form movement-unified-editor" onSubmit={saveEdit}><div className="movement-source-badge"><span>Origem do lançamento</span><strong>{sourceLabel}</strong><small>As alterações serão refletidas automaticamente na tela de origem.</small></div>
-    {isTransaction&&<><label>Descrição<input name="name" defaultValue={editing.name} required/></label><label>Categoria<input name="category" defaultValue={editing.category} required/></label></>}
-    {(isObligation||isCard||isStreaming)&&<label>{isObligation?"Pessoa ou empresa":isCard?"Responsável pela compra":"Participante"}<input name="counterparty" defaultValue={isObligation?editing.counterparty_name:isCard?editing.purchased_by:editing.participant_name} required/></label>}
-    {(isObligation||isStreaming)&&<label>WhatsApp<input name="phone" defaultValue={editing.phone||""} inputMode="tel" placeholder="5511999999999"/></label>}
-    {(isObligation||isCard)&&<label>Descrição<input name="description" defaultValue={editing.description} required/></label>}
-    {isObligation&&<label>Categoria<input name="category" defaultValue={editing.category||"Outros"} required/></label>}
-    <div className="fields"><label>Valor total<input value={editValue} onChange={e=>setEditValue(e.target.value)} inputMode="decimal" required/></label><label>{isStreaming?"Vencimento":"Data / primeiro vencimento"}<input name="date" type="date" defaultValue={isTransaction?editing.transaction_date:isObligation?editing.next_due_date:isCard?editing.first_due_date:editing.due_date} required/></label></div>
-    {(isTransaction||isObligation||isCard)&&<label>Quantidade de parcelas<input name="installments" type="number" min="1" max="120" defaultValue={isTransaction?editing.installment_count:isObligation?editing.installments:editing.installment_count}/><small>O valor mensal será recalculado automaticamente.</small></label>}
-    {isTransaction&&<label>Tipo financeiro<select name="direction" defaultValue={editing.transaction_type}><option value="income">Receita / entrada</option><option value="expense">Despesa / saída</option></select></label>}{isObligation&&<label>Tipo financeiro<select name="direction" defaultValue={editing.direction}><option value="receivable">Valor a receber</option><option value="payable">Valor a pagar</option></select></label>}
-    <label>Status<select name="status" defaultValue={editing.status}>{isTransaction?<><option value="pending">Pendente</option><option value="received">Recebido</option><option value="paid">Pago</option><option value="overdue">Vencido</option><option value="cancelled">Cancelado</option></>:isObligation?<><option value="open">Em aberto</option><option value="paid">Quitado</option><option value="overdue">Vencido</option><option value="cancelled">Cancelado</option></>:isCard?<><option value="open">Em aberto</option><option value="paid">Pago</option><option value="cancelled">Cancelado</option></>:<><option value="pending">Pendente</option><option value="paid">Pago</option><option value="overdue">Atrasado</option><option value="cancelled">Cancelado</option></>}</select></label>
-    {isTransaction&&<><label className="installment-toggle"><input name="recurring" type="checkbox" defaultChecked={editing.is_recurring}/>Movimentação recorrente mensal</label><label>Dia do vencimento mensal<input name="recurrence_day" type="number" min="1" max="31" defaultValue={editing.recurrence_day||new Date(editing.transaction_date+"T12:00").getDate()}/></label></>}
-    {(isTransaction||isObligation)&&<label>Observações<textarea name="notes" defaultValue={editing.notes||""}/></label>}
-    <div className="movement-editor-actions"><button type="button" className="danger-text" disabled={saving} onClick={remove}>Excluir</button><button type="button" disabled={saving} onClick={()=>setEditing(null)}>Cancelar</button><button className="primary" disabled={saving}>{saving?"Salvando…":"Salvar alterações"}</button></div></form></Modal>}</>}
 
 function DebtPage({ notify }) {
   return (
