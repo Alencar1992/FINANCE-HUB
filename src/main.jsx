@@ -68,6 +68,17 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { AuthGate } from "./features/auth/AuthGate";
 import { APP_URL, authErrorPt } from "./features/auth/auth-utils";
 import {
+  acknowledgeSalaryNotifications,
+  fetchActiveCustomModules,
+  fetchLatestBackup,
+  fetchNextMonthlyClosure,
+  fetchPendingSalaryNotifications,
+  fetchTransactions,
+  finishMonthlyClosure,
+  getProfileAssetSignedUrl,
+  runSalarySchedule,
+} from "./features/app-shell/app-shell-service";
+import {
   calculateCardPayment,
   calculateSavings,
   installmentAmount,
@@ -94,13 +105,6 @@ const categoryRules=[
   ["Renda extra",/venda|freelancer|comiss[aã]o|renda extra|servi[cç]o/i],
 ];
 function suggestCategory(name,type){const found=categoryRules.find(([,rule])=>rule.test(String(name)));return found?{category:found[0],confidence:.9,source:"rules"}:{category:type==="income"?"Outras receitas":"Outras despesas",confidence:.45,source:"rules"}}
-async function processSalarySchedule(ownerId){
-  const{data,error}=await supabase.rpc("process_salary_for_owner",{p_owner_id:ownerId});
-  if(error)throw error;
-  const created=Number(data||0);
-  if(created)window.dispatchEvent(new Event("finance-data-changed"));
-  return created;
-}
 const nav = [
   ["Início", Home],
   ["Movimentações", ArrowLeftRight],
@@ -170,10 +174,10 @@ function FinanceApp({ owner }) {
       events.forEach((event) => removeEventListener(event, reset));
     };
   }, []);
-  useEffect(()=>{(async()=>{if(!profile.avatar_url)return setAvatarUrl("");const{data}=await supabase.storage.from("finance-assets").createSignedUrl(profile.avatar_url,3600);setAvatarUrl(data?.signedUrl||"")})()},[profile.avatar_url]);
-  useEffect(()=>{(async()=>{try{const count=await processSalarySchedule(owner.id);if(count)await loadTransactions()}catch(error){console.error("Falha no processamento salarial transacional",error)}await loadSalaryNotifications()})()},[owner.id]);
-  useEffect(()=>{supabase.from("monthly_closures").select("*").eq("owner_id",owner.id).in("status",["pending","ready"]).order("reference_month",{ascending:true}).limit(1).maybeSingle().then(({data})=>setClosureNotice(data||null))},[owner.id]);
-  useEffect(()=>{supabase.from("finance_backups").select("backup_date,created_at,status").eq("owner_id",owner.id).order("created_at",{ascending:false}).limit(1).maybeSingle().then(({data})=>{if(data){setBackupNotice(data);setTimeout(()=>setBackupNotice(null),8000)}})},[owner.id]);
+  useEffect(()=>{getProfileAssetSignedUrl(profile.avatar_url).then(setAvatarUrl)},[profile.avatar_url]);
+  useEffect(()=>{(async()=>{try{const count=await runSalarySchedule(owner.id);if(count){window.dispatchEvent(new Event("finance-data-changed"));await loadTransactions()}}catch(error){console.error("Falha no processamento salarial transacional",error)}await loadSalaryNotifications()})()},[owner.id]);
+  useEffect(()=>{fetchNextMonthlyClosure(owner.id).then(({data})=>setClosureNotice(data||null))},[owner.id]);
+  useEffect(()=>{fetchLatestBackup(owner.id).then(({data})=>{if(data){setBackupNotice(data);setTimeout(()=>setBackupNotice(null),8000)}})},[owner.id]);
   const filtered = useMemo(
     () =>
       tx.filter((x) =>
@@ -182,11 +186,7 @@ function FinanceApp({ owner }) {
     [tx, query],
   );
   async function loadTransactions() {
-      const { data, error } = await supabase
-        .from("transactions")
-        .select("*")
-        .eq("owner_id", owner.id)
-        .order("transaction_date", { ascending: false });
+      const { data, error } = await fetchTransactions(owner.id);
       if (!error)
         setTx(
           (data || []).map((x) => {
@@ -218,19 +218,19 @@ function FinanceApp({ owner }) {
         );
   }
   async function loadSalaryNotifications(){
-    const{data,error}=await supabase.from("salary_events").select("id,event_type,amount,reference_month,created_at").eq("owner_id",owner.id).in("event_type",["salary_savings","advance_savings"]).is("notified_at",null).order("created_at",{ascending:true});
+    const{data,error}=await fetchPendingSalaryNotifications(owner.id);
     if(!error&&data?.length)setSalaryNotice({events:data,total:data.reduce((sum,event)=>sum+Number(event.amount),0)});
   }
   async function acknowledgeSalaryNotice(){
     const ids=salaryNotice?.events.map(event=>event.id)||[];
-    if(ids.length){const{error}=await supabase.from("salary_events").update({notified_at:new Date().toISOString()}).eq("owner_id",owner.id).in("id",ids);if(error)return notify("Não foi possível confirmar esta notificação.")}
+    if(ids.length){const{error}=await acknowledgeSalaryNotifications(owner.id,ids,new Date().toISOString());if(error)return notify("Não foi possível confirmar esta notificação.")}
     setSalaryNotice(null);
   }
   function closureRows(snapshot){return Object.entries(snapshot||{}).filter(([,rows])=>Array.isArray(rows)).flatMap(([origem,rows])=>rows.map(row=>({origem,...row})))}
   function downloadBlob(blob,name){const link=document.createElement("a");link.href=URL.createObjectURL(blob);link.download=name;document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(link.href),3000)}
-  async function completeClosure(){const rows=closureRows(closureNotice.snapshot),month=closureNotice.reference_month.slice(0,7),headers=[...new Set(rows.flatMap(row=>Object.keys(row)))],csv=[headers.join(";"),...rows.map(row=>headers.map(key=>`"${String(typeof row[key]==="object"?JSON.stringify(row[key]):row[key]??"").replaceAll('"','""')}"`).join(";"))].join("\n");downloadBlob(new Blob(["\ufeff"+csv],{type:"text/csv;charset=utf-8"}),`fechamento-${month}.csv`);const{jsPDF}=await import("jspdf");const pdf=new jsPDF();pdf.setFontSize(18);pdf.text(`Fechamento mensal · ${month}`,14,18);pdf.setFontSize(9);let y=28;rows.forEach(row=>{const text=`${row.origem} · ${row.name||row.description||row.counterparty_name||row.participant_name||"Registro"} · ${money(Number(row.amount||row.total_amount||row.remaining_amount||0))}`;pdf.text(text.slice(0,105),14,y);y+=6;if(y>282){pdf.addPage();y=18}});pdf.save(`fechamento-${month}.pdf`);await supabase.from("monthly_closures").update({status:"completed",closed_at:new Date().toISOString(),downloaded_at:new Date().toISOString()}).eq("id",closureNotice.id).eq("owner_id",owner.id);setClosureNotice(null);notify("Fechamento concluído e arquivos baixados.")}
+  async function completeClosure(){const rows=closureRows(closureNotice.snapshot),month=closureNotice.reference_month.slice(0,7),headers=[...new Set(rows.flatMap(row=>Object.keys(row)))],csv=[headers.join(";"),...rows.map(row=>headers.map(key=>`"${String(typeof row[key]==="object"?JSON.stringify(row[key]):row[key]??"").replaceAll('"','""')}"`).join(";"))].join("\n");downloadBlob(new Blob(["\ufeff"+csv],{type:"text/csv;charset=utf-8"}),`fechamento-${month}.csv`);const{jsPDF}=await import("jspdf");const pdf=new jsPDF();pdf.setFontSize(18);pdf.text(`Fechamento mensal · ${month}`,14,18);pdf.setFontSize(9);let y=28;rows.forEach(row=>{const text=`${row.origem} · ${row.name||row.description||row.counterparty_name||row.participant_name||"Registro"} · ${money(Number(row.amount||row.total_amount||row.remaining_amount||0))}`;pdf.text(text.slice(0,105),14,y);y+=6;if(y>282){pdf.addPage();y=18}});pdf.save(`fechamento-${month}.pdf`);const now=new Date().toISOString();await finishMonthlyClosure(owner.id,closureNotice.id,now);setClosureNotice(null);notify("Fechamento concluído e arquivos baixados.")}
   useEffect(() => {loadTransactions();const refresh=()=>loadTransactions();addEventListener("finance-data-changed",refresh);return()=>removeEventListener("finance-data-changed",refresh)}, [owner.id]);
-  async function loadCustomModules(){const{data}=await supabase.from("custom_modules").select("*").eq("owner_id",owner.id).eq("active",true).order("created_at");setCustomModules(data||[])}
+  async function loadCustomModules(){const{data}=await fetchActiveCustomModules(owner.id);setCustomModules(data||[])}
   useEffect(()=>{loadCustomModules()},[owner.id]);
   const visibleNav=[...nav.slice(0,7),...(profile.expense_plan_enabled!==false?[["Eliminar despesas",Target]]:[]),...(profile.streaming_enabled?[["Streamings",Play]]:[]),...customModules.map(m=>[`module:${m.id}`,Sparkles,m.name]),...nav.slice(7)];
   async function addTx(e) {
@@ -574,7 +574,7 @@ function SalaryModal({owner,close,notify,refresh}){
   const[loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[form,setForm]=useState({salary_amount:"",salary_day:5,salary_enabled:false,advance_amount:"",advance_day:20,advance_enabled:false,savings_enabled:false,savings_mode:"percentage",savings_value:"",savings_recurring:false,savings_on_salary:true,savings_on_advance:false});
   useEffect(()=>{(async()=>{const{data}=await supabase.from("salary_settings").select("*").eq("owner_id",owner.id).maybeSingle();if(data)setForm({...data,salary_amount:Number(data.salary_amount).toFixed(2).replace(".",","),advance_amount:Number(data.advance_amount).toFixed(2).replace(".",","),savings_value:Number(data.savings_value).toFixed(data.savings_mode==="percentage"?2:2).replace(".",",")});setLoading(false)})()},[owner.id]);
   const set=(key,value)=>setForm(current=>({...current,[key]:value})),salary=parseBRNumber(form.salary_amount)||0,advance=parseBRNumber(form.advance_amount)||0,savingValue=parseBRNumber(form.savings_value)||0,calc=amount=>calculateSavings(amount,form.savings_mode,savingValue),salarySaving=form.savings_enabled&&form.savings_on_salary?calc(salary):0,advanceSaving=form.savings_enabled&&form.savings_on_advance?calc(advance):0;
-  async function save(e){e.preventDefault();setSaving(true);const payload={owner_id:owner.id,salary_amount:salary,salary_day:Number(form.salary_day),salary_enabled:form.salary_enabled,advance_amount:advance,advance_day:Number(form.advance_day),advance_enabled:form.advance_enabled,savings_enabled:form.savings_enabled,savings_mode:form.savings_mode,savings_value:savingValue,savings_recurring:form.savings_recurring,savings_on_salary:form.savings_on_salary,savings_on_advance:form.savings_on_advance,updated_at:new Date().toISOString()};const{error}=await supabase.from("salary_settings").upsert(payload,{onConflict:"owner_id"});if(error){setSaving(false);return notify("Não foi possível salvar a configuração salarial.")}try{const count=await processSalarySchedule(owner.id);await refresh();close();notify(count?`${count} lançamento(s) processado(s) e configuração salva.`:"Configuração salarial salva.")}catch(processError){console.error("Falha no processamento salarial transacional",processError);notify("A configuração foi salva, mas o processamento será tentado novamente pela rotina automática.")}finally{setSaving(false)}}
+  async function save(e){e.preventDefault();setSaving(true);const payload={owner_id:owner.id,salary_amount:salary,salary_day:Number(form.salary_day),salary_enabled:form.salary_enabled,advance_amount:advance,advance_day:Number(form.advance_day),advance_enabled:form.advance_enabled,savings_enabled:form.savings_enabled,savings_mode:form.savings_mode,savings_value:savingValue,savings_recurring:form.savings_recurring,savings_on_salary:form.savings_on_salary,savings_on_advance:form.savings_on_advance,updated_at:new Date().toISOString()};const{error}=await supabase.from("salary_settings").upsert(payload,{onConflict:"owner_id"});if(error){setSaving(false);return notify("Não foi possível salvar a configuração salarial.")}try{const count=await runSalarySchedule(owner.id);if(count)window.dispatchEvent(new Event("finance-data-changed"));await refresh();close();notify(count?`${count} lançamento(s) processado(s) e configuração salva.`:"Configuração salarial salva.")}catch(processError){console.error("Falha no processamento salarial transacional",processError);notify("A configuração foi salva, mas o processamento será tentado novamente pela rotina automática.")}finally{setSaving(false)}}
   return <Modal title="Central de salário" close={close}>{loading?<p>Carregando configuração…</p>:<form className="form salary-form" onSubmit={save}><section><div className="salary-section-title"><Banknote/><div><strong>Pagamento principal</strong><small>Entrada mensal do salário.</small></div></div><div className="fields"><label>Valor do salário<input value={form.salary_amount} onChange={e=>set("salary_amount",e.target.value)} inputMode="decimal" placeholder="1.234,56" required/></label><label>Dia do pagamento<input type="number" min="1" max="31" value={form.salary_day} onChange={e=>set("salary_day",e.target.value)} required/></label></div><label className="salary-check"><input type="checkbox" checked={form.salary_enabled} onChange={e=>set("salary_enabled",e.target.checked)}/><span><Check/></span>Inserir o salário automaticamente todos os meses</label></section><section><div className="salary-section-title"><CalendarDays/><div><strong>Adiantamento salarial</strong><small>Configure se você recebe adiantamento.</small></div></div><div className="fields"><label>Valor do adiantamento<input value={form.advance_amount} onChange={e=>set("advance_amount",e.target.value)} inputMode="decimal" placeholder="0,00"/></label><label>Dia do adiantamento<input type="number" min="1" max="31" value={form.advance_day} onChange={e=>set("advance_day",e.target.value)}/></label></div><label className="salary-check"><input type="checkbox" checked={form.advance_enabled} onChange={e=>set("advance_enabled",e.target.checked)}/><span><Check/></span>Inserir o adiantamento automaticamente todos os meses</label></section><section className="salary-savings"><div className="salary-section-title"><PiggyBank/><div><strong>Reserva de Poupança</strong><small>Debita do saldo e adiciona automaticamente aos investimentos.</small></div></div><label className="salary-check"><input type="checkbox" checked={form.savings_enabled} onChange={e=>set("savings_enabled",e.target.checked)}/><span><Check/></span>Habilitar Reserva de Poupança</label>{form.savings_enabled&&<><div className="fields"><label>Forma de cálculo<select value={form.savings_mode} onChange={e=>set("savings_mode",e.target.value)}><option value="percentage">Porcentagem do recebimento</option><option value="fixed">Valor fixo em reais</option></select></label><label>{form.savings_mode==="percentage"?"Porcentagem":"Valor do aporte"}<input value={form.savings_value} onChange={e=>set("savings_value",e.target.value)} inputMode="decimal" placeholder={form.savings_mode==="percentage"?"Ex.: 10,00%":"Ex.: 250,00"}/></label></div><div className="salary-apply"><label><input type="checkbox" checked={form.savings_on_salary} onChange={e=>set("savings_on_salary",e.target.checked)}/>Aplicar no salário</label><label><input type="checkbox" checked={form.savings_on_advance} onChange={e=>set("savings_on_advance",e.target.checked)}/>Aplicar no adiantamento</label></div><label className="salary-check"><input type="checkbox" checked={form.savings_recurring} onChange={e=>set("savings_recurring",e.target.checked)}/><span><Check/></span>Realizar o aporte automaticamente nas datas configuradas</label><div className="salary-preview"><span>Próximo aporte calculado</span><strong>{money(salarySaving+advanceSaving)}</strong><small>Salário: {money(salarySaving)} · Adiantamento: {money(advanceSaving)}</small></div></>}</section><p className="salary-note"><ShieldCheck/>Cada competência é registrada apenas uma vez. Se o aplicativo não estiver aberto na data, o processamento acontece no próximo acesso.</p><div className="form-actions"><button type="button" onClick={close}>Cancelar</button><button className="primary" disabled={saving}>{saving?"Salvando…":"Salvar configuração"}</button></div></form>}</Modal>
 }
 function NotificationCount({ owner }) {
