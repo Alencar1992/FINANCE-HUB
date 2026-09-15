@@ -34,16 +34,17 @@ const expectedFiles = [
   '20260903050045_harden_auth_mfa_rls.sql',
   '20260903182636_atomic_salary_processing.sql',
   '20260903190230_atomic_universal_movement_edit.sql',
+  '20260915045413_create_financial_entry_rpc.sql',
 ];
 const expected = {
-  migrations: 30,
-  tables: 24,
-  columns: 273,
-  constraints: 127,
-  indexes: 58,
-  policies: 51,
+  migrations: 31,
+  tables: 25,
+  columns: 281,
+  constraints: 131,
+  indexes: 59,
+  policies: 53,
   triggers: 22,
-  functions: 14,
+  functions: 15,
 };
 
 const bootstrap = `
@@ -203,6 +204,151 @@ try {
 if (!aal1Blocked) throw new Error('A política restritiva não bloqueou uma escrita com AAL1.');
 await db.exec('reset role;');
 await db.exec(`insert into public.owners(id,name) values ('${ownerB}','Usuário de rollback');`);
+
+// Valida a criação unificada: quatro tipos, idempotência, autorização e rollback.
+const createEntryRpcSecurity = await db.query(`
+  select
+    not p.prosecdef as security_invoker,
+    p.proconfig @> array['search_path=pg_catalog, public'] as fixed_search_path,
+    has_function_privilege('authenticated', p.oid, 'EXECUTE') as authenticated_execute,
+    not has_function_privilege('anon', p.oid, 'EXECUTE') as anon_blocked,
+    not has_function_privilege('public', p.oid, 'EXECUTE') as public_blocked,
+    pg_get_functiondef(p.oid) ilike '%on conflict (owner_id, request_id) do nothing%' as idempotent_claim
+  from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'public' and p.proname = 'create_financial_entry'
+`);
+if (!createEntryRpcSecurity.rows[0] || Object.values(createEntryRpcSecurity.rows[0]).some(value => value !== true)) {
+  throw new Error('Contrato de segurança ou idempotência da RPC de criação está incorreto.');
+}
+
+const createEntryTableSecurity = await db.query(`
+  select
+    c.relrowsecurity as rls_enabled,
+    has_table_privilege('authenticated', c.oid, 'SELECT') as authenticated_select,
+    has_table_privilege('authenticated', c.oid, 'INSERT') as authenticated_insert,
+    not has_table_privilege('authenticated', c.oid, 'UPDATE') as direct_update_blocked,
+    not has_table_privilege('anon', c.oid, 'SELECT') as anon_blocked
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relname = 'financial_entry_requests'
+`);
+if (!createEntryTableSecurity.rows[0] || Object.values(createEntryTableSecurity.rows[0]).some(value => value !== true)) {
+  throw new Error('Proteção da tabela de idempotência está incorreta.');
+}
+
+const incomeRequest = '50000000-0000-4000-8000-000000000001';
+const expenseRequest = '50000000-0000-4000-8000-000000000002';
+const receivableRequest = '50000000-0000-4000-8000-000000000003';
+const payableRequest = '50000000-0000-4000-8000-000000000004';
+const expensePayload = `{
+  "description":"Mercado","category":"Alimentação","total_amount":300,
+  "installments":3,"date":"2026-09-15","status":"pending",
+  "is_recurring":false,"classification_source":"rules","classification_confidence":0.9
+}`;
+await db.exec(`
+  set role authenticated;
+  select set_config('request.jwt.claim.sub', '${ownerA}', false);
+  select set_config('request.jwt.claims', '{"sub":"${ownerA}","aal":"aal2","is_anonymous":false}', false);
+  select public.create_financial_entry('${ownerA}','${incomeRequest}','income',
+    '{"description":"Consultoria","total_amount":3000,"installments":1,"date":"2026-09-15","status":"received"}'::jsonb);
+  select public.create_financial_entry('${ownerA}','${expenseRequest}','expense','${expensePayload}'::jsonb);
+  select public.create_financial_entry('${ownerA}','${receivableRequest}','receivable',
+    '{"description":"Empréstimo","counterparty_name":"Maria Silva","phone":"5511999999999","total_amount":120,"installments":2,"date":"2026-09-20","status":"open"}'::jsonb);
+  select public.create_financial_entry('${ownerA}','${payableRequest}','payable',
+    '{"description":"Notebook","counterparty_name":"Loja","total_amount":1200,"installments":12,"date":"2026-09-25","status":"open"}'::jsonb);
+`);
+const idempotentReplay = await scalar(db, `
+  select (public.create_financial_entry('${ownerA}','${expenseRequest}','expense','${expensePayload}'::jsonb)
+    ->> 'idempotentReplay')::boolean
+`);
+const unifiedRequests = await scalar(db, `select count(*) from public.financial_entry_requests where owner_id='${ownerA}'`);
+const unifiedTransactions = await scalar(db, `
+  select count(*) from public.transactions
+  where owner_id='${ownerA}' and name in ('Consultoria','Mercado')
+`);
+const unifiedObligations = await scalar(db, `
+  select count(*) from public.obligations
+  where owner_id='${ownerA}' and description in ('Empréstimo','Notebook')
+`);
+const expectedInstallments = await scalar(db, `
+  select count(*) from (
+    select id from public.transactions where owner_id='${ownerA}' and name='Mercado'
+      and amount=100 and total_amount=300 and installment_count=3
+    union all
+    select id from public.obligations where owner_id='${ownerA}' and description='Empréstimo'
+      and direction='receivable' and installment_amount=60
+    union all
+    select id from public.obligations where owner_id='${ownerA}' and description='Notebook'
+      and direction='payable' and installment_amount=100
+  ) entries
+`);
+if (idempotentReplay !== 1 || unifiedRequests !== 4 || unifiedTransactions !== 2 || unifiedObligations !== 2 || expectedInstallments !== 3) {
+  throw new Error('Criação unificada dos quatro tipos não preservou valores ou idempotência.');
+}
+
+let reusedRequestBlocked = false;
+try {
+  await db.exec(`select public.create_financial_entry('${ownerA}','${expenseRequest}','expense',
+    '{"description":"Outro valor","total_amount":999,"installments":1}'::jsonb)`);
+} catch {
+  reusedRequestBlocked = true;
+}
+if (!reusedRequestBlocked) throw new Error('Uma chave idempotente foi reutilizada com dados diferentes.');
+
+await db.exec(`
+  select set_config('request.jwt.claim.sub', '${ownerB}', false);
+  select set_config('request.jwt.claims', '{"sub":"${ownerB}","aal":"aal2","is_anonymous":false}', false);
+`);
+let crossOwnerCreateBlocked = false;
+try {
+  await db.exec(`select public.create_financial_entry('${ownerA}','50000000-0000-4000-8000-000000000005','expense',
+    '{"description":"Tentativa cruzada","total_amount":10,"installments":1}'::jsonb)`);
+} catch {
+  crossOwnerCreateBlocked = true;
+}
+if (!crossOwnerCreateBlocked) throw new Error('RPC de criação permitiu gravar para outro proprietário.');
+
+await db.exec(`
+  select set_config('request.jwt.claim.sub', '${ownerA}', false);
+  select set_config('request.jwt.claims', '{"sub":"${ownerA}","aal":"aal1","is_anonymous":false}', false);
+`);
+let createAal1Blocked = false;
+try {
+  await db.exec(`select public.create_financial_entry('${ownerA}','50000000-0000-4000-8000-000000000006','expense',
+    '{"description":"Sem MFA","total_amount":10,"installments":1}'::jsonb)`);
+} catch {
+  createAal1Blocked = true;
+}
+if (!createAal1Blocked) throw new Error('RPC de criação aceitou uma sessão AAL1.');
+
+await db.exec(`
+  reset role;
+  create function private.fail_unified_entry_test() returns trigger language plpgsql as $$
+  begin
+    if new.description = 'Falha forçada' then raise exception 'forced unified entry failure'; end if;
+    return new;
+  end $$;
+  create trigger fail_unified_entry_test before insert on public.obligations
+  for each row execute function private.fail_unified_entry_test();
+  set role authenticated;
+  select set_config('request.jwt.claim.sub', '${ownerA}', false);
+  select set_config('request.jwt.claims', '{"sub":"${ownerA}","aal":"aal2","is_anonymous":false}', false);
+`);
+const rollbackRequest = '50000000-0000-4000-8000-000000000007';
+let unifiedFailureRaised = false;
+try {
+  await db.exec(`select public.create_financial_entry('${ownerA}','${rollbackRequest}','payable',
+    '{"description":"Falha forçada","counterparty_name":"Fornecedor","total_amount":50,"installments":1,"status":"open"}'::jsonb)`);
+} catch {
+  unifiedFailureRaised = true;
+}
+await db.exec('reset role; drop trigger fail_unified_entry_test on public.obligations; drop function private.fail_unified_entry_test();');
+const rolledBackRequest = await scalar(db, `select count(*) from public.financial_entry_requests where request_id='${rollbackRequest}'`);
+const rolledBackObligation = await scalar(db, `select count(*) from public.obligations where description='Falha forçada'`);
+if (!unifiedFailureRaised || rolledBackRequest !== 0 || rolledBackObligation !== 0) {
+  throw new Error('Falha na criação unificada deixou dados parciais.');
+}
 
 // Valida a operação salarial atômica: resultado completo, repetição e autorização.
 await db.exec(`
@@ -388,8 +534,9 @@ if (universalRpcSecurity.rows.length !== 2 || universalRpcSecurity.rows.some(row
 }
 
 console.table(actual);
-console.log('OK: as 30 migrations reconstruíram o catálogo público esperado.');
+console.log('OK: as 31 migrations reconstruíram o catálogo público esperado.');
 console.log('OK: smoke CRUD, isolamento por proprietário e exigência AAL2 validados.');
+console.log('OK: criação unificada dos quatro tipos, idempotência e rollback validados.');
 console.log('OK: salário/reserva atômicos, idempotentes e com rollback completo validados.');
 console.log('OK: edição universal sincronizada, idempotente e com rollback completo validada.');
 await db.close();
