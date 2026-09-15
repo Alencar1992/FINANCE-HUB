@@ -49,7 +49,7 @@ function Modal({ title, close, children }) {
   );
 }
 
-function Transactions({ rows, open, onEdit }) {
+export function Transactions({ rows, open, onEdit }) {
   const [filter, setFilter] = useState("all");
   const shown = rows.filter((row) => filter === "all" || row.type === filter);
 
