@@ -78,7 +78,10 @@ import {
   getProfileAssetSignedUrl,
   runSalarySchedule,
 } from "./features/app-shell/app-shell-service";
-import { UnifiedMovements } from "./features/movements/UnifiedMovements";
+import {
+  Transactions,
+  UnifiedMovements,
+} from "./features/movements/UnifiedMovements";
 import {
   calculateCardPayment,
   calculateSavings,
@@ -1760,7 +1763,7 @@ function CalendarModule({ owner, tx }) {
     </div>
   );
 }
-function ReportsModule({ tx }) {
+export function ReportsModule({ tx }) {
   const inc = tx
       .filter((x) => x.type === "in")
       .reduce((a, x) => a + x.value, 0),
