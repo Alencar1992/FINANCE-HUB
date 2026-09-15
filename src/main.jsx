@@ -82,10 +82,11 @@ import {
   Transactions,
   UnifiedMovements,
 } from "./features/movements/UnifiedMovements";
+import { UnifiedEntryForm } from "./features/movements/UnifiedEntryForm";
+import { createdEntryMessage } from "./features/movements/financial-entry-utils";
 import {
   calculateCardPayment,
   calculateSavings,
-  installmentAmount,
   money,
   monthStart,
   normalizeText,
@@ -97,18 +98,6 @@ import {
 const exportDownload=(blob,name)=>{const link=document.createElement("a");link.href=URL.createObjectURL(blob);link.download=name;document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(link.href),3000)};
 const exportCell=value=>typeof value==="object"&&value!==null?JSON.stringify(value):value??"";
 const exportCsv=rows=>{const headers=[...new Set(rows.flatMap(row=>Object.keys(row)))],quote=value=>`"${String(exportCell(value)).replaceAll('"','""')}"`;return [headers.map(quote).join(";"),...rows.map(row=>headers.map(key=>quote(row[key])).join(";"))].join("\n")};
-const categoryRules=[
-  ["Alimentação",/mercado|supermercado|padaria|restaurante|lanche|ifood|comida|açougue/i],
-  ["Moradia",/aluguel|condom[ií]nio|energia|luz|[aá]gua|g[aá]s|iptu/i],
-  ["Transporte",/combust[ií]vel|gasolina|uber|99|ônibus|onibus|oficina|moto|carro|ped[aá]gio/i],
-  ["Saúde",/farm[aá]cia|m[eé]dico|dentista|hospital|consulta|exame|academia/i],
-  ["Assinaturas",/netflix|spotify|disney|prime|streaming|assinatura|gamepass/i],
-  ["Educação",/curso|faculdade|escola|livro|mensalidade/i],
-  ["Investimentos",/investimento|aporte|poupan[cç]a|cdb|lci|lca|tesouro/i],
-  ["Salário",/sal[aá]rio|adiantamento|pagamento mensal/i],
-  ["Renda extra",/venda|freelancer|comiss[aã]o|renda extra|servi[cç]o/i],
-];
-function suggestCategory(name,type){const found=categoryRules.find(([,rule])=>rule.test(String(name)));return found?{category:found[0],confidence:.9,source:"rules"}:{category:type==="income"?"Outras receitas":"Outras despesas",confidence:.45,source:"rules"}}
 const nav = [
   ["Início", Home],
   ["Movimentações", ArrowLeftRight],
@@ -237,71 +226,10 @@ function FinanceApp({ owner }) {
   async function loadCustomModules(){const{data}=await fetchActiveCustomModules(owner.id);setCustomModules(data||[])}
   useEffect(()=>{loadCustomModules()},[owner.id]);
   const visibleNav=[...nav.slice(0,7),...(profile.expense_plan_enabled!==false?[["Eliminar despesas",Target]]:[]),...(profile.streaming_enabled?[["Streamings",Play]]:[]),...customModules.map(m=>[`module:${m.id}`,Sparkles,m.name]),...nav.slice(7)];
-  async function addTx(e) {
-    e.preventDefault();
-    const f = new FormData(e.currentTarget),
-      total = parseBRNumber(f.get("total")),
-      count = Number(f.get("installments") || 1),
-      monthly = installmentAmount(total, count);
-    const type=f.get("type") === "in" ? "income" : "expense",
-      typedCategory=String(f.get("cat")||"").trim(),
-      suggestion=suggestCategory(f.get("name"),type),
-      category=typedCategory||suggestion.category,
-      startDate=f.get("date")||new Date().toISOString().slice(0,10),
-      dayBefore=new Date(startDate+"T12:00"),dayAfter=new Date(startDate+"T12:00");
-    dayBefore.setDate(dayBefore.getDate()-2);dayAfter.setDate(dayAfter.getDate()+2);
-    const{data:possibleDuplicates}=await supabase.from("transactions").select("id,name,amount,transaction_date").eq("owner_id",owner.id).eq("transaction_type",type).eq("amount",monthly).gte("transaction_date",dayBefore.toISOString().slice(0,10)).lte("transaction_date",dayAfter.toISOString().slice(0,10)).neq("status","cancelled").limit(10);
-    const duplicate=(possibleDuplicates||[]).find(item=>normalizeText(item.name)===normalizeText(f.get("name")))||possibleDuplicates?.[0];
-    const row = {
-      owner_id: owner.id,
-      name: f.get("name"),
-      category,
-      classification_source:typedCategory?"manual":suggestion.source,
-      classification_confidence:typedCategory?1:suggestion.confidence,
-      duplicate_of:duplicate?.id||null,
-      duplicate_review_status:duplicate?"pending":"not_flagged",
-      amount: monthly,
-      total_amount: total,
-      is_installment: count > 1,
-      installment_count: count,
-      installment_number: 1,
-      installment_amount: monthly,
-      transaction_type: type,
-      status: "pending",
-      transaction_date:startDate,
-      is_recurring:f.get("recurring")==="on",
-      recurrence_active:f.get("recurring")==="on",
-      recurrence_day:f.get("recurring")==="on"?Number(f.get("recurrence_day")||new Date().getDate()):null,
-    };
-    const { data, error } = await supabase
-      .from("transactions")
-      .insert(row)
-      .select()
-      .single();
-    if (error) {
-      notify("Não foi possível salvar. Tente novamente.");
-      return;
-    }
-    setTx((v) => [
-      {
-        id: data.id,
-        name: data.name,
-        cat: data.category,
-        value: Number(data.amount),
-        date: "Hoje",
-        type: f.get("type"),
-        status: "Pendente",
-      },
-      ...v,
-    ]);
+  function finishEntryCreation(result) {
     setModal(null);
-    notify(
-      duplicate
-        ? `Movimentação salva, mas encontramos um possível lançamento duplicado de ${money(monthly)}.`
-        : count > 1
-        ? `Parcela 1/${count} salva: ${money(monthly)}`
-        : "Movimentação salva no Supabase",
-    );
+    window.dispatchEvent(new Event("finance-data-changed"));
+    notify(createdEntryMessage(result));
   }
   return (
     <div className={`${dark ? "app dark" : "app"}${sidebarCollapsed ? " sidebar-collapsed" : ""}`} style={{"--violet":profile.app_color||"#6445ED","--user-bg":profile.background_color||"#F6F8FC"}}>
@@ -345,7 +273,7 @@ function FinanceApp({ owner }) {
       {menu && <div className="scrim" onClick={() => setMenu(false)} />}
       <nav className="mobile-bottom-nav" aria-label="Navegação principal no celular">
         {visibleNav.slice(0,2).map(([n,I,label])=><button key={n} className={page===n?"active":""} onClick={()=>setPage(n)}><I/><span>{label||n}</span></button>)}
-        <button className="mobile-bottom-add" onClick={()=>setModal("transaction")} aria-label="Nova movimentação"><Plus/></button>
+        <button className="mobile-bottom-add" onClick={()=>setModal("financial-entry")} aria-label="Novo lançamento"><Plus/></button>
         {visibleNav.slice(2,3).map(([n,I,label])=><button key={n} className={page===n?"active":""} onClick={()=>setPage(n)}><I/><span>{label||n}</span></button>)}
         <button onClick={()=>setMenu(true)}><Menu/><span>Mais</span></button>
       </nav>
@@ -388,7 +316,7 @@ function FinanceApp({ owner }) {
               <Bell />
               <NotificationCount owner={owner} />
             </button>
-            <button className="primary" onClick={() => setModal("transaction")}>
+            <button className="primary" onClick={() => setModal("financial-entry")}>
               <Plus />
               Nova movimentação
             </button>
@@ -404,7 +332,7 @@ function FinanceApp({ owner }) {
               tx={tx}
             />
           ) : page === "Movimentações" ? (
-            <UnifiedMovements owner={owner} baseRows={filtered} open={() => setModal("transaction")} notify={notify} refresh={loadTransactions}/>
+            <UnifiedMovements owner={owner} baseRows={filtered} open={() => setModal("financial-entry")} notify={notify} refresh={loadTransactions}/>
           ) : page === "Me devem" ? (
             <ObligationsPage
               owner={owner}
@@ -450,8 +378,13 @@ function FinanceApp({ owner }) {
           ) : null}
         </div>
       </main>
-      {modal === "transaction" && (
-        <TransactionModal addTx={addTx} close={() => setModal(null)} />
+      {modal === "financial-entry" && (
+        <UnifiedEntryForm
+          owner={owner}
+          close={() => setModal(null)}
+          notify={notify}
+          onCreated={finishEntryCreation}
+        />
       )}
       {modal === "notifications" && (
         <Modal title="Central de notificações" close={() => setModal(null)}>
@@ -486,94 +419,6 @@ const initials = (n) =>
     .map((x) => x[0])
     .join("")
     .toUpperCase();
-function TransactionModal({ addTx, close }) {
-  const [parcelled, setParcelled] = useState(false),
-    [recurring,setRecurring]=useState(false),
-    [total, setTotal] = useState(""),
-    [count, setCount] = useState(2);
-  const monthly = (parseBRNumber(total) || 0) / Number(count || 1);
-  return (
-    <Modal title="Nova movimentação" close={close}>
-      <form onSubmit={addTx} className="form">
-        <div className="seg">
-          <label>
-            <input type="radio" name="type" value="in" defaultChecked />
-            Receita
-          </label>
-          <label>
-            <input type="radio" name="type" value="out" />
-            Despesa
-          </label>
-        </div>
-        <label>
-          Descrição
-          <input
-            name="name"
-            required
-            placeholder="Ex.: Venda, mercado, salário"
-          />
-        </label>
-        <div className="fields">
-          <label>
-            Categoria
-            <input name="cat" placeholder="Automática ou digite" />
-          </label>
-          <label>
-            Valor total
-            <input
-              name="total"
-              value={total}
-              onChange={(e) => setTotal(e.target.value)}
-              required
-              type="text"
-              inputMode="decimal"
-              pattern="[0-9.]+([,][0-9]{1,2})?|[0-9]+([.][0-9]{1,2})?"
-              placeholder="R$ 0,00"
-            />
-          </label>
-        </div>
-        <label className="installment-toggle">
-          <input
-            type="checkbox"
-            checked={parcelled}
-            disabled={recurring}
-            onChange={(e) => setParcelled(e.target.checked)}
-          />
-          Parcelar este valor
-        </label>
-        <label className="installment-toggle recurring-toggle"><input name="recurring" type="checkbox" checked={recurring} onChange={e=>{setRecurring(e.target.checked);if(e.target.checked)setParcelled(false)}}/>Despesa ou receita recorrente mensal</label>
-        {recurring&&<div className="installment-box"><label>Dia mensal do vencimento<input name="recurrence_day" type="number" min="1" max="31" defaultValue={new Date().getDate()}/></label><div><span>Como funciona</span><strong>Fixa até quitação</strong><small>Aparecerá em cada mês enquanto estiver ativa.</small></div></div>}
-        {parcelled && (
-          <div className="installment-box">
-            <label>
-              Quantidade de parcelas
-              <input
-                name="installments"
-                type="number"
-                min="2"
-                max="120"
-                value={count}
-                onChange={(e) => setCount(e.target.value)}
-              />
-            </label>
-            <div>
-              <span>Valor mensal</span>
-              <strong>{money(monthly || 0)}</strong>
-              <small>Será inserida agora apenas a parcela 1/{count}.</small>
-            </div>
-          </div>
-        )}{" "}
-        {!parcelled && <input type="hidden" name="installments" value="1" />}
-        <label>Data inicial<input name="date" type="date" required defaultValue={new Date().toISOString().slice(0,10)}/></label>
-        <label>
-          Observação
-          <textarea name="notes" placeholder="Opcional" />
-        </label>
-        <button className="primary submit">Salvar movimentação</button>
-      </form>
-    </Modal>
-  );
-}
 function SalaryModal({owner,close,notify,refresh}){
   const[loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[form,setForm]=useState({salary_amount:"",salary_day:5,salary_enabled:false,advance_amount:"",advance_day:20,advance_enabled:false,savings_enabled:false,savings_mode:"percentage",savings_value:"",savings_recurring:false,savings_on_salary:true,savings_on_advance:false});
   useEffect(()=>{(async()=>{const{data}=await supabase.from("salary_settings").select("*").eq("owner_id",owner.id).maybeSingle();if(data)setForm({...data,salary_amount:Number(data.salary_amount).toFixed(2).replace(".",","),advance_amount:Number(data.advance_amount).toFixed(2).replace(".",","),savings_value:Number(data.savings_value).toFixed(data.savings_mode==="percentage"?2:2).replace(".",",")});setLoading(false)})()},[owner.id]);

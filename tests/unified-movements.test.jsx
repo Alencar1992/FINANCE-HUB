@@ -25,6 +25,7 @@ describe("tela unificada de movimentações", () => {
   });
 
   it("renderiza a lista e filtra receitas e despesas", async () => {
+    const open = vi.fn();
     render(
       <UnifiedMovements
         owner={{ id: "owner-1" }}
@@ -48,7 +49,7 @@ describe("tela unificada de movimentações", () => {
             status: "Pago",
           },
         ]}
-        open={vi.fn()}
+        open={open}
         notify={vi.fn()}
         refresh={vi.fn()}
       />,
@@ -67,6 +68,9 @@ describe("tela unificada de movimentações", () => {
     fireEvent.click(screen.getByRole("button", { name: "Despesas" }));
     expect(screen.queryByText("Salário")).not.toBeInTheDocument();
     expect(screen.getByText("Mercado")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Novo lançamento" }));
+    expect(open).toHaveBeenCalledTimes(1);
   });
 
   it("abre o editor correto para uma compra de cartão", async () => {

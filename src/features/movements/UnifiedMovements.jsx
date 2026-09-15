@@ -63,7 +63,7 @@ export function Transactions({ rows, open, onEdit }) {
         {open && (
           <button className="primary" onClick={open}>
             <Plus />
-            Adicionar
+            Novo lançamento
           </button>
         )}
       </div>
@@ -148,6 +148,9 @@ export function UnifiedMovements({ owner, baseRows, open, notify, refresh }) {
 
   useEffect(() => {
     loadLinked();
+    const refreshLinked = () => loadLinked();
+    window.addEventListener("finance-data-changed", refreshLinked);
+    return () => window.removeEventListener("finance-data-changed", refreshLinked);
   }, [loadLinked]);
 
   async function beginEdit(row) {
