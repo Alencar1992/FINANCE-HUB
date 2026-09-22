@@ -1,13 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import {
-  MoreHorizontal,
-  PackageOpen,
-  Plus,
-  TrendingDown,
-  TrendingUp,
-  X,
-} from "lucide-react";
+import { X } from "lucide-react";
 import { money, parseBRNumber } from "../../lib/finance";
+import { MovementList } from "./MovementList";
 import {
   fetchLinkedMovements,
   fetchMovementSource,
@@ -19,16 +13,6 @@ import {
   mapLinkedMovements,
   movementValue,
 } from "./movement-utils";
-
-function EmptyState({ text }) {
-  return (
-    <div className="module-empty">
-      <PackageOpen />
-      <strong>{text}</strong>
-      <span>Use o botão de cadastro para começar.</span>
-    </div>
-  );
-}
 
 function Modal({ title, close, children }) {
   return (
@@ -44,86 +28,6 @@ function Modal({ title, close, children }) {
           </button>
         </div>
         {children}
-      </div>
-    </div>
-  );
-}
-
-function Transactions({ rows, open, onEdit }) {
-  const [filter, setFilter] = useState("all");
-  const shown = rows.filter((row) => filter === "all" || row.type === filter);
-
-  return (
-    <div className="page-panel">
-      <div className="page-head">
-        <div>
-          <h2>Movimentações</h2>
-          <p>Acompanhe todas as entradas e saídas.</p>
-        </div>
-        {open && (
-          <button className="primary" onClick={open}>
-            <Plus />
-            Adicionar
-          </button>
-        )}
-      </div>
-      <div className="filters">
-        <button
-          className={filter === "all" ? "selected" : ""}
-          onClick={() => setFilter("all")}
-        >
-          Todas
-        </button>
-        <button
-          className={filter === "in" ? "selected" : ""}
-          onClick={() => setFilter("in")}
-        >
-          Receitas
-        </button>
-        <button
-          className={filter === "out" ? "selected" : ""}
-          onClick={() => setFilter("out")}
-        >
-          Despesas
-        </button>
-      </div>
-      <div className="table">
-        {shown.map((row) => (
-          <div className="tr" key={row.id}>
-            <i className={row.type === "in" ? "txicon in" : "txicon out"}>
-              {row.type === "in" ? <TrendingUp /> : <TrendingDown />}
-            </i>
-            <div>
-              <strong>{row.name}</strong>
-              <span>{row.cat}</span>
-            </div>
-            <span>{row.date}</span>
-            <span>{row.status}</span>
-            <b className={row.type === "in" ? "pos" : "neg"}>
-              {row.type === "in" ? "+ " : "- "}
-              {money(row.value)}
-            </b>
-            <button
-              aria-label={
-                row.editable === false
-                  ? "Gerenciado pelo módulo de origem"
-                  : "Editar movimentação"
-              }
-              disabled={row.editable === false}
-              onClick={() => onEdit?.(row)}
-              title={
-                row.editable === false
-                  ? "Edite no módulo de origem"
-                  : "Editar movimentação"
-              }
-            >
-              <MoreHorizontal />
-            </button>
-          </div>
-        ))}
-        {!shown.length && (
-          <EmptyState text="Nenhuma movimentação neste filtro." />
-        )}
       </div>
     </div>
   );
@@ -244,7 +148,7 @@ export function UnifiedMovements({ owner, baseRows, open, notify, refresh }) {
 
   return (
     <>
-      <Transactions
+      <MovementList
         rows={[...baseRows, ...linked]}
         open={open}
         onEdit={beginEdit}
