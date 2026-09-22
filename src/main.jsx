@@ -79,6 +79,7 @@ import {
   runSalarySchedule,
 } from "./features/app-shell/app-shell-service";
 import { UnifiedMovements } from "./features/movements/UnifiedMovements";
+import { ReportsModule } from "./features/reports/ReportsModule";
 import {
   calculateCardPayment,
   calculateSavings,
@@ -1757,58 +1758,6 @@ function CalendarModule({ owner, tx }) {
           </div>
         ))}
       </div>
-    </div>
-  );
-}
-function ReportsModule({ tx }) {
-  const inc = tx
-      .filter((x) => x.type === "in")
-      .reduce((a, x) => a + x.value, 0),
-    out = tx.filter((x) => x.type === "out").reduce((a, x) => a + x.value, 0);
-  function csv() {
-    const body = [
-      "Nome,Categoria,Data,Tipo,Valor",
-      ...tx.map(
-        (x) => `"${x.name}","${x.cat}","${x.date}",${x.type},${x.value}`,
-      ),
-    ].join("\n");
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([body], { type: "text/csv" }));
-    a.download = "finance-hub.csv";
-    a.click();
-    URL.revokeObjectURL(a.href);
-  }
-  return (
-    <div className="page-panel">
-      <div className="page-head">
-        <div>
-          <h2>Relatórios</h2>
-          <p>Resumo baseado nas movimentações reais.</p>
-        </div>
-        <button className="primary" onClick={csv} disabled={!tx.length}>
-          <Download />
-          Exportar CSV
-        </button>
-      </div>
-      <div className="report-grid">
-        <div>
-          <span>Receitas</span>
-          <strong className="pos">{money(inc)}</strong>
-        </div>
-        <div>
-          <span>Despesas</span>
-          <strong className="neg">{money(out)}</strong>
-        </div>
-        <div>
-          <span>Resultado</span>
-          <strong>{money(inc - out)}</strong>
-        </div>
-        <div>
-          <span>Lançamentos</span>
-          <strong>{tx.length}</strong>
-        </div>
-      </div>
-      <Transactions rows={tx} open={null} />
     </div>
   );
 }
