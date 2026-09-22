@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ErrorBoundary } from "../src/components/ErrorBoundary";
 import {
   buildMovementsCsv,
   ReportsModule,
@@ -33,7 +34,11 @@ describe("módulo de relatórios", () => {
   });
 
   it("abre o resumo e o detalhamento sem derrubar a tela", () => {
-    render(<ReportsModule tx={rows} />);
+    render(
+      <ErrorBoundary>
+        <ReportsModule tx={rows} />
+      </ErrorBoundary>,
+    );
 
     expect(
       screen.getByRole("heading", { name: "Relatórios" }),
@@ -46,6 +51,7 @@ describe("módulo de relatórios", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Salário")).toBeInTheDocument();
     expect(screen.getByText("Mercado, mês")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("gera CSV válido e inicia o download", () => {
